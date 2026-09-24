@@ -17,6 +17,7 @@ GENERATED_TYPES = [
 PER_TYPE = 3
 TOTAL_GENERATED = len(GENERATED_TYPES) * PER_TYPE
 MAX_RETRIES = 3
+MAX_QA_REPAIR_ROUNDS = 2
 NEAR_DUPLICATE_THRESHOLD = 0.88
 GROUNDING_MIN_OVERLAP = 0.25
 
@@ -94,14 +95,16 @@ Do not use the pipe character in question_content. Pipes are reserved only for D
 
 QA_SYSTEM_PROMPT = """You are a strict JoVE quiz quality reviewer.
 Use ONLY the supplied lesson source. Do not use outside knowledge.
-Return only a JSON array. For every question return exactly:
+The EXISTING QUIZ QUESTIONS are approved content used only as a duplication/exclusion reference. Do not judge or rewrite them.
+Review the GENERATED QUESTIONS against the lesson source, against the existing quiz questions, and against one another.
+Return only a JSON array. For every generated question return exactly:
 question_index, status, issue
 
 status must be one of: pass, review, fail.
 - pass: clearly supported, answer is correct, wording is unambiguous, and no meaningful duplicate exists.
 - review: probably usable but source support, phrasing, ambiguity, or confidence is not strong enough for automatic approval.
 - fail: clearly unsupported, incorrect, contradictory, malformed, or materially duplicated.
-Keep issue concise. Do not rewrite the question.
+Keep issue concise and identify duplication/overlap explicitly when that is the reason. Do not rewrite the question.
 """
 
 
@@ -513,7 +516,13 @@ def _apply_review(question: dict[str, Any], level: str, reason: str) -> None:
             question["review_reason"] = (existing + "; " + reason).strip("; ")
 
 
-def build_accuracy_review_prompt(subject: str, lesson_id: str, source_text: str, questions: list[dict[str, Any]]) -> str:
+def build_accuracy_review_prompt(
+    subject: str,
+    lesson_id: str,
+    source_text: str,
+    questions: list[dict[str, Any]],
+    existing_questions: list[dict[str, Any]] | None = None,
+) -> str:
     payload = [
         {
             k: q.get(k, "")
@@ -521,16 +530,26 @@ def build_accuracy_review_prompt(subject: str, lesson_id: str, source_text: str,
         }
         for q in questions
     ]
+    existing_payload = [
+        {
+            "question_type": q.get("question_type", ""),
+            "question_content": q.get("question_content", ""),
+        }
+        for q in (existing_questions or [])
+    ]
     return f"""Subject: {subject}
 Lesson ID: {lesson_id}
 
 SOURCE MATERIAL:
 {source_text}
 
-QUESTIONS:
+EXISTING QUIZ QUESTIONS (approved; duplication reference only):
+{json.dumps(existing_payload, ensure_ascii=False)}
+
+GENERATED QUESTIONS TO REVIEW:
 {json.dumps(payload, ensure_ascii=False)}
 
-Review every question. Return JSON array only.
+Review every generated question. Return JSON array only.
 """
 
 
@@ -541,12 +560,18 @@ def apply_ai_accuracy_qa(
     source_text: str,
     api_key: str,
     model: str,
+    existing_questions: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     warnings: list[str] = []
     if not questions:
         return warnings
     try:
-        raw = call_llm(QA_SYSTEM_PROMPT, build_accuracy_review_prompt(subject, lesson_id, source_text, questions), api_key, model)
+        raw = call_llm(
+            QA_SYSTEM_PROMPT,
+            build_accuracy_review_prompt(subject, lesson_id, source_text, questions, existing_questions),
+            api_key,
+            model,
+        )
         reviews = parse_llm_json(raw)
     except Exception as exc:
         warnings.append(f"AI accuracy QA could not run: {exc}")
@@ -572,14 +597,67 @@ def apply_ai_accuracy_qa(
             continue
         status = str(review.get("status", "")).strip().lower()
         issue = str(review.get("issue", "")).strip()
-        if status == "pass":
+        level = _qa_review_level(status, issue)
+        if level == "none":
             continue
-        if status == "fail":
+        if level == "fail":
             _apply_review(q, "fail", issue or "AI accuracy QA failed this question.")
         else:
             _apply_review(q, "review", issue or "AI accuracy QA requested manual review.")
     return warnings
 
+
+
+DUPLICATE_ISSUE_TERMS = (
+    "duplicate", "duplicat", "overlap", "redundant", "repeat", "repeats",
+    "paraphrase", "similar to", "same concept", "same point",
+)
+
+SEVERE_ISSUE_TERMS = (
+    "unsupported", "not supported", "incorrect", "wrong", "contradict", "ambiguous",
+    "ambiguity", "malformed", "invalid", "not found in source", "not clearly supported",
+    "cannot verify", "cannot be verified", "misleading", "vague", "source support",
+)
+
+
+def _issue_contains(reason: str, terms: tuple[str, ...]) -> bool:
+    lowered = str(reason or "").lower()
+    return any(term in lowered for term in terms)
+
+
+def _qa_review_level(status: str, issue: str) -> str:
+    """Keep duplicate-only findings yellow after repair attempts; reserve red for substantive defects."""
+    status = str(status or "").strip().lower()
+    if status == "pass":
+        return "none"
+    if status == "fail":
+        duplicate_only = _issue_contains(issue, DUPLICATE_ISSUE_TERMS) and not _issue_contains(issue, SEVERE_ISSUE_TERMS)
+        return "review" if duplicate_only else "fail"
+    return "review"
+
+
+def _should_regenerate(question: dict[str, Any]) -> bool:
+    level = str(question.get("review_level", "none")).lower()
+    reason = str(question.get("review_reason", "") or "")
+    if level == "fail":
+        return True
+    if level != "review":
+        return False
+    # Review-level questions are auto-repaired when the reason is substantive or duplicate-related.
+    repair_terms = DUPLICATE_ISSUE_TERMS + SEVERE_ISSUE_TERMS + (
+        "borderline source-term overlap", "no significant terms", "qa returned no result",
+    )
+    return _issue_contains(reason, repair_terms)
+
+
+
+def _ordered_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    for qtype in GENERATED_TYPES:
+        ordered.extend([q for q in questions if q.get("question_type") == qtype][:PER_TYPE])
+    for index, q in enumerate(ordered, 1):
+        q["question_index"] = index
+    return ordered
 
 def generate_additional_questions(
     *,
@@ -600,106 +678,170 @@ def generate_additional_questions(
 
     accepted: list[dict[str, Any]] = []
     generation_warnings: list[str] = []
+    rejected_for_repair: list[dict[str, Any]] = []
+    replacement_count = 0
+    completed_repair_rounds = 0
 
     def notify(msg: str, pct: int | None = None):
         if progress_callback:
             progress_callback(msg, pct)
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        missing = _missing(accepted)
-        if not any(missing.values()):
-            break
-        notify(f"Generating additional questions (attempt {attempt}/{MAX_RETRIES})...", None)
-        answer_balance_note = ""
-        accepted_tf = [q for q in accepted if q.get("question_type") == "True or False"]
-        if missing.get("True or False", 0) > 0 and accepted_tf:
-            tf_answers = {q.get("right_answer") for q in accepted_tf}
-            if len(tf_answers) == 1:
-                current = next(iter(tf_answers))
-                opposite = "2" if current == "1" else "1"
-                answer_balance_note = (
-                    f"- True/False balance requirement: at least one remaining True/False question MUST have right_answer={opposite} "
-                    f"so the lesson does not use the same TRUE/FALSE answer position for every question."
-                )
+    def fill_missing(current: list[dict[str, Any]], phase_label: str) -> list[dict[str, Any]]:
+        for attempt in range(1, MAX_RETRIES + 1):
+            missing = _missing(current)
+            if not any(missing.values()):
+                break
+            notify(f"{phase_label} (attempt {attempt}/{MAX_RETRIES})...", None)
+            answer_balance_note = ""
+            accepted_tf = [q for q in current if q.get("question_type") == "True or False"]
+            if missing.get("True or False", 0) > 0 and accepted_tf:
+                tf_answers = {q.get("right_answer") for q in accepted_tf}
+                if len(tf_answers) == 1:
+                    current_answer = next(iter(tf_answers))
+                    opposite = "2" if current_answer == "1" else "1"
+                    answer_balance_note = (
+                        f"- True/False balance requirement: at least one remaining True/False question MUST have right_answer={opposite} "
+                        f"so the lesson does not use the same TRUE/FALSE answer position for every question."
+                    )
 
-        prompt = build_generation_prompt(
-            lesson_id=lesson_id,
-            lesson_title=lesson_title,
-            subject=subject,
-            pt_text=pt_text,
-            transcript_text=transcript_text,
-            existing_questions=existing_questions + accepted,
-            missing=missing,
-            answer_balance_note=answer_balance_note,
+            # Rejected QA candidates are shown to the model as additional exclusions so
+            # repair rounds do not recreate the same failed/overlapping approach.
+            exclusions = existing_questions + current + rejected_for_repair
+            prompt = build_generation_prompt(
+                lesson_id=lesson_id,
+                lesson_title=lesson_title,
+                subject=subject,
+                pt_text=pt_text,
+                transcript_text=transcript_text,
+                existing_questions=exclusions,
+                missing=missing,
+                answer_balance_note=answer_balance_note,
+            )
+            try:
+                raw = call_llm(SYSTEM_PROMPT, prompt, api_key, model)
+                candidates = parse_llm_json(raw)
+            except Exception as exc:
+                generation_warnings.append(f"{phase_label} attempt {attempt} failed: {exc}")
+                continue
+
+            wanted = {qtype for qtype, count in missing.items() if count > 0}
+            for raw_candidate in candidates:
+                qtype = str(raw_candidate.get("question_type", "")).strip() if isinstance(raw_candidate, dict) else ""
+                if qtype not in wanted:
+                    continue
+                if _counts(current).get(qtype, 0) >= PER_TYPE:
+                    continue
+                clean, warnings, errors = validate_generated_question(
+                    raw_candidate,
+                    index=len(current) + 1,
+                    lesson_id=lesson_id,
+                    source_text=source_text,
+                )
+                if errors:
+                    generation_warnings.append(
+                        f"Rejected {qtype or 'unknown'} candidate: " + " | ".join(errors[:3])
+                    )
+                    continue
+                if _is_duplicate(clean, existing_questions + current):
+                    generation_warnings.append(f"Rejected near-duplicate generated {qtype} question.")
+                    continue
+                if qtype == "True or False":
+                    prior_tf = [q for q in current if q.get("question_type") == "True or False"]
+                    if len(prior_tf) >= 2 and len({q.get("right_answer") for q in prior_tf}) == 1:
+                        if clean.get("right_answer") == prior_tf[0].get("right_answer"):
+                            generation_warnings.append(
+                                "Rejected True/False candidate to prevent all three answers using the same option."
+                            )
+                            continue
+                if warnings:
+                    _apply_review(clean, "review", "; ".join(warnings))
+                current.append(clean)
+
+        missing = _missing(current)
+        if any(missing.values()):
+            raise RuntimeError(
+                "Could not produce the required 18 structurally valid questions. Missing: "
+                + ", ".join(f"{qtype}={count}" for qtype, count in missing.items() if count)
+            )
+        return current
+
+    accepted = fill_missing(accepted, "Generating additional questions")
+
+    # QA-repair loop: fail/material-overlap questions are removed, regenerated in the
+    # same question type, and reviewed again. Only unresolved items after repair rounds
+    # remain color-coded for manual review in the final workbook.
+    qa_passes = 0
+    for repair_round in range(0, MAX_QA_REPAIR_ROUNDS + 1):
+        accepted = _ordered_questions(accepted)
+        randomize_generated_answers(accepted)
+
+        tf_flag = _true_false_distribution_flag(accepted)
+        if tf_flag:
+            generation_warnings.append(tf_flag)
+            for q in accepted:
+                if q.get("question_type") == "True or False":
+                    _apply_review(q, "review", tf_flag)
+
+        if enable_ai_accuracy_qa:
+            notify(
+                "Running source-grounding accuracy QA..." if repair_round == 0
+                else f"Re-running QA after automated repair ({repair_round}/{MAX_QA_REPAIR_ROUNDS})...",
+                None,
+            )
+            generation_warnings.extend(
+                apply_ai_accuracy_qa(
+                    accepted,
+                    subject,
+                    lesson_id,
+                    source_text,
+                    api_key,
+                    model,
+                    existing_questions=existing_questions,
+                )
+            )
+            qa_passes += 1
+
+        targets = [q for q in accepted if _should_regenerate(q)]
+        if not targets or repair_round >= MAX_QA_REPAIR_ROUNDS:
+            break
+
+        completed_repair_rounds += 1
+        original_before_repair = list(accepted)
+        rejected_for_repair.extend(dict(q) for q in targets)
+        target_ids = {id(q) for q in targets}
+        repair_base = [q for q in accepted if id(q) not in target_ids]
+        generation_warnings.append(
+            f"Automated QA repair round {completed_repair_rounds}: attempting to replace {len(targets)} generated question(s)."
         )
         try:
-            raw = call_llm(SYSTEM_PROMPT, prompt, api_key, model)
-            candidates = parse_llm_json(raw)
+            repaired = fill_missing(repair_base, f"Generating QA replacements for round {completed_repair_rounds}")
         except Exception as exc:
-            generation_warnings.append(f"Generation attempt {attempt} failed: {exc}")
-            continue
-
-        wanted = {qtype for qtype, count in missing.items() if count > 0}
-        for raw_candidate in candidates:
-            qtype = str(raw_candidate.get("question_type", "")).strip() if isinstance(raw_candidate, dict) else ""
-            if qtype not in wanted:
-                continue
-            if _counts(accepted).get(qtype, 0) >= PER_TYPE:
-                continue
-            clean, warnings, errors = validate_generated_question(
-                raw_candidate,
-                index=len(accepted) + 1,
-                lesson_id=lesson_id,
-                source_text=source_text,
+            # Repair is best-effort. Never fail a lesson solely because replacement
+            # generation could not improve an otherwise complete 18-question set.
+            accepted = original_before_repair
+            generation_warnings.append(
+                f"Automated QA repair round {completed_repair_rounds} could not complete ({exc}); "
+                "keeping the original flagged question(s) for manual review."
             )
-            if errors:
-                generation_warnings.append(
-                    f"Rejected {qtype or 'unknown'} candidate: " + " | ".join(errors[:3])
-                )
-                continue
-            if _is_duplicate(clean, existing_questions + accepted):
-                generation_warnings.append(f"Rejected near-duplicate generated {qtype} question.")
-                continue
-            if qtype == "True or False":
-                prior_tf = [q for q in accepted if q.get("question_type") == "True or False"]
-                if len(prior_tf) >= 2 and len({q.get("right_answer") for q in prior_tf}) == 1:
-                    if clean.get("right_answer") == prior_tf[0].get("right_answer"):
-                        generation_warnings.append("Rejected True/False candidate to prevent all three answers using the same option.")
-                        continue
-            if warnings:
-                _apply_review(clean, "review", "; ".join(warnings))
-            accepted.append(clean)
+            break
+        accepted = repaired
+        replacement_count += len(targets)
 
-    missing = _missing(accepted)
-    if any(missing.values()):
-        raise RuntimeError(
-            "Could not produce the required 18 structurally valid questions. Missing: "
-            + ", ".join(f"{qtype}={count}" for qtype, count in missing.items() if count)
-        )
+    accepted = _ordered_questions(accepted)
 
-    # Put generated questions in a stable type order, 3 each, then randomize only
-    # answer/choice positions inside each question. This makes QC easy while still
-    # preventing predictable answer placement.
-    ordered: list[dict[str, Any]] = []
-    for qtype in GENERATED_TYPES:
-        ordered.extend([q for q in accepted if q.get("question_type") == qtype][:PER_TYPE])
-    accepted = ordered
-    for index, q in enumerate(accepted, 1):
-        q["question_index"] = index
-
-    randomize_generated_answers(accepted)
-
-    tf_flag = _true_false_distribution_flag(accepted)
-    if tf_flag:
-        generation_warnings.append(tf_flag)
-        for q in accepted:
-            if q.get("question_type") == "True or False":
+    # If AI QA is disabled, answer randomisation still runs exactly once here.
+    if not enable_ai_accuracy_qa:
+        randomize_generated_answers(accepted)
+        tf_flag = _true_false_distribution_flag(accepted)
+        if tf_flag:
+            generation_warnings.append(tf_flag)
+            for q in accepted:
                 _apply_review(q, "review", tf_flag)
 
-    if enable_ai_accuracy_qa:
-        notify("Running source-grounding accuracy QA...", None)
-        generation_warnings.extend(
-            apply_ai_accuracy_qa(accepted, subject, lesson_id, source_text, api_key, model)
+    if replacement_count:
+        generation_warnings.append(
+            f"Automated QA repair replaced {replacement_count} generated question(s) across "
+            f"{completed_repair_rounds} repair round(s)."
         )
 
     report = {
@@ -708,5 +850,9 @@ def generate_additional_questions(
         "warnings": generation_warnings,
         "review_count": sum(1 for q in accepted if q.get("review_level") == "review"),
         "fail_count": sum(1 for q in accepted if q.get("review_level") == "fail"),
+        "qa_passes": qa_passes,
+        "qa_repair_rounds": completed_repair_rounds,
+        "qa_replacements": replacement_count,
     }
     return accepted, report
+

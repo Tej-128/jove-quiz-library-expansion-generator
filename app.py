@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import os
+import shutil
 import tempfile
 import traceback
 import zipfile
@@ -26,11 +28,27 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-.main-title{font-size:2rem;font-weight:800;color:#1a1a2e;border-bottom:3px solid #E63946;padding-bottom:8px;margin-bottom:4px}
-.subtitle{font-size:.95rem;color:#666;margin-bottom:20px}
-.stat-box{background:#fff;border-radius:10px;padding:14px 18px;border:1px solid #ddd;box-shadow:0 1px 4px rgba(0,0,0,.06);margin:4px 0}
-.stat-label{font-size:.75rem;color:#999;text-transform:uppercase;letter-spacing:.5px}
-.stat-value{font-size:1.6rem;font-weight:800;color:#1a1a2e}
+:root{--jove-red:#d71920;--jove-red-dark:#a9151a;--jove-ink:#20242a;--jove-muted:#67707a;--jove-soft:#f5f6f7;--jove-border:#e4e7eb}
+.stApp{background:#ffffff;color:var(--jove-ink)}
+[data-testid="stSidebar"]{background:#f7f7f8;border-right:1px solid var(--jove-border)}
+[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3{color:var(--jove-ink)}
+[data-testid="stMetric"]{background:#ffffff;border:1px solid var(--jove-border);border-radius:10px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+[data-testid="stFileUploader"] section{border:1.5px dashed #c9cdd2;border-radius:10px;background:#fafafa}
+[data-testid="stFileUploader"] section:hover{border-color:var(--jove-red)}
+.stButton>button,.stDownloadButton>button{border-radius:7px;font-weight:700}
+.stButton>button[kind="primary"],.stDownloadButton>button{background:var(--jove-red);border-color:var(--jove-red);color:white}
+.stButton>button[kind="primary"]:hover,.stDownloadButton>button:hover{background:var(--jove-red-dark);border-color:var(--jove-red-dark);color:white}
+.jove-header{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border:1px solid var(--jove-border);border-left:6px solid var(--jove-red);border-radius:10px;background:#fff;margin-bottom:20px}
+.jove-brand{font-size:2.05rem;font-weight:900;letter-spacing:-1px;color:var(--jove-red);line-height:1}
+.jove-product{font-size:1.15rem;font-weight:750;color:var(--jove-ink);margin-top:5px}
+.jove-subtitle{font-size:.92rem;color:var(--jove-muted);margin-top:5px}
+.jove-badge{font-size:.72rem;font-weight:800;letter-spacing:.6px;text-transform:uppercase;background:#fcebec;color:var(--jove-red-dark);border:1px solid #f3c4c7;border-radius:999px;padding:7px 11px}
+.auth-wrap{max-width:560px;margin:8vh auto 0 auto;padding:28px 30px;border:1px solid var(--jove-border);border-top:5px solid var(--jove-red);border-radius:12px;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.06)}
+.auth-brand{font-size:2.2rem;font-weight:900;color:var(--jove-red);letter-spacing:-1px}
+.auth-title{font-size:1.35rem;font-weight:800;color:var(--jove-ink);margin-top:7px}
+.auth-copy{font-size:.92rem;color:var(--jove-muted);margin:8px 0 18px 0}
+.section-kicker{font-size:.72rem;color:var(--jove-red);font-weight:800;letter-spacing:.8px;text-transform:uppercase;margin-bottom:3px}
+hr{border:none;border-top:1px solid var(--jove-border)}
 </style>
 """,
     unsafe_allow_html=True,
@@ -40,6 +58,8 @@ st.session_state.setdefault("result_zip", None)
 st.session_state.setdefault("result_name", "")
 st.session_state.setdefault("batch_rows", [])
 st.session_state.setdefault("batch_warnings", [])
+st.session_state.setdefault("jove_access_granted", False)
+st.session_state.setdefault("active_upload_temp_dir", "")
 
 
 def _get_api_key() -> str:
@@ -48,6 +68,55 @@ def _get_api_key() -> str:
     except Exception:
         secret = ""
     return str(secret or os.environ.get("OPENAI_API_KEY", "")).strip()
+
+
+def _get_access_password() -> str:
+    """Read the app-level access password without storing it in public GitHub code."""
+    try:
+        secret = st.secrets.get("APP_ACCESS_PASSWORD", "")
+    except Exception:
+        secret = ""
+    return str(secret or os.environ.get("APP_ACCESS_PASSWORD", "")).strip()
+
+
+def _require_app_access() -> None:
+    """Fail closed until the user enters the shared JoVE pilot password."""
+    configured_password = _get_access_password()
+    if st.session_state.get("jove_access_granted"):
+        return
+
+    st.markdown(
+        """
+        <div class="auth-wrap">
+          <div class="auth-brand">JoVE</div>
+          <div class="auth-title">Quiz Library Expansion</div>
+          <div class="auth-copy">Internal pilot workspace. Enter the access password to continue.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not configured_password:
+        st.error("APP_ACCESS_PASSWORD is not configured. Add it in the app's Secrets before using this public deployment.")
+        st.stop()
+
+    entered_password = st.text_input(
+        "Access password",
+        type="password",
+        placeholder="Enter JoVE pilot password",
+        key="jove_access_password_input",
+    )
+    if st.button("Enter secure workspace", type="primary", use_container_width=True):
+        if hmac.compare_digest(entered_password, configured_password):
+            st.session_state["jove_access_granted"] = True
+            st.session_state.pop("jove_access_password_input", None)
+            st.rerun()
+        else:
+            st.error("Incorrect access password.")
+    st.stop()
+
+
+_require_app_access()
 
 
 def _safe_name(value: str) -> str:
@@ -74,7 +143,11 @@ def _build_zip(output_files: list[tuple[str, str]], batch_rows: list[dict]) -> b
 api_key = _get_api_key()
 
 with st.sidebar:
-    st.markdown("## Configuration")
+    st.markdown('<div class="section-kicker">JoVE Internal</div>', unsafe_allow_html=True)
+    st.markdown("## Quiz Expansion Setup")
+    if st.button("Lock workspace", use_container_width=True):
+        st.session_state["jove_access_granted"] = False
+        st.rerun()
     if api_key:
         st.success("OpenAI API key configured for this app.")
     else:
@@ -115,9 +188,17 @@ with st.sidebar:
     )
     st.caption(f"JoVE Internal Tool - {PIPELINE_VERSION}")
 
-st.markdown('<div class="main-title">JoVE Quiz Library Expansion Generator</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="subtitle">Convert existing lesson quiz Word documents to the Quiz Library Excel format, then append 18 source-grounded new questions.</div>',
+    """
+    <div class="jove-header">
+      <div>
+        <div class="jove-brand">JoVE</div>
+        <div class="jove-product">Quiz Library Expansion Generator</div>
+        <div class="jove-subtitle">Convert approved lesson quizzes to Excel and append 18 source-grounded questions for review.</div>
+      </div>
+      <div class="jove-badge">Internal Pilot</div>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -132,7 +213,11 @@ if not uploaded_files:
     st.info("Upload a chapter ZIP to begin. The detector uses file names, extensions, folder IDs, fuzzy matching, and content clues rather than one rigid naming convention.")
     st.stop()
 
+previous_temp_dir = st.session_state.get("active_upload_temp_dir", "")
+if previous_temp_dir and os.path.isdir(previous_temp_dir):
+    shutil.rmtree(previous_temp_dir, ignore_errors=True)
 records, upload_errors, temp_dir = collect_uploaded_files(uploaded_files)
+st.session_state["active_upload_temp_dir"] = temp_dir
 bundles = bundle_lessons(records)
 
 if upload_errors:
@@ -222,6 +307,8 @@ if st.button(
                 "Total Questions": report["total_questions"],
                 "New Review Flags": report["generated_review_count"],
                 "New Red Flags": report["generated_fail_count"],
+                "QA Replacements": report.get("qa_replacements", 0),
+                "QA Repair Rounds": report.get("qa_repair_rounds", 0),
                 "Existing Parse Flags": report["existing_parse_flags"],
                 "Status": "Completed",
             })
@@ -236,6 +323,8 @@ if st.button(
                 "Total Questions": "",
                 "New Review Flags": "",
                 "New Red Flags": "",
+                "QA Replacements": "",
+                "QA Repair Rounds": "",
                 "Existing Parse Flags": "",
                 "Status": f"Failed: {exc}",
             })
@@ -256,6 +345,13 @@ if st.button(
         st.session_state["result_zip"] = None
         st.session_state["batch_rows"] = batch_rows
         st.session_state["batch_warnings"] = batch_warnings
+
+    # Source and generated work files are temporary. Once the final ZIP bytes are
+    # held in session state, remove temporary disk copies from the Streamlit worker.
+    shutil.rmtree(output_dir, ignore_errors=True)
+    if temp_dir and os.path.isdir(temp_dir):
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    st.session_state["active_upload_temp_dir"] = ""
 
 if st.session_state.get("batch_rows"):
     st.markdown("### Batch results")

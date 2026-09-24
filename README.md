@@ -19,13 +19,14 @@ For each lesson, the tool:
    - 3 Dropdown
    - 3 Match the following
    - 3 Categorisation
-8. Prevents exact/near duplicates against both the existing quiz and the newly generated questions.
-9. Randomizes answer/choice positions for generated choice-based formats while never shuffling existing Word questions.
-10. Appends all 18 generated questions below the existing quiz rows.
-11. Colors questions requiring manual review in Excel:
-    - Yellow: manual review recommended
-    - Red: critical parse/QA issue
-12. Produces one Excel workbook per lesson plus a batch summary CSV inside the final ZIP.
+8. Prevents exact/near duplicates against both the existing quiz and the newly generated questions. AI QA also receives the existing quiz as an exclusion reference so it can catch semantic overlap that simple text matching misses.
+9. Automatically replaces generated questions that fail QA or receive a substantive duplicate/source/ambiguity review flag, then re-runs QA. Up to two repair rounds are attempted before a question is left for manual review.
+10. Randomizes answer/choice positions for generated choice-based formats while never shuffling existing Word questions.
+11. Appends all 18 generated questions below the existing quiz rows.
+12. Colors only unresolved questions requiring manual review in Excel:
+    - Yellow: manual review recommended, including duplicate-only issues that remain after repair attempts
+    - Red: substantive critical issue such as unsupported/incorrect/ambiguous/malformed content
+13. Produces one Excel workbook per lesson plus a batch summary CSV inside the final ZIP.
 
 ## Expected input
 
@@ -103,15 +104,21 @@ Existing questions appear first, in original order. The 18 generated questions a
 
 ## Streamlit deployment
 
-1. Push this repository to GitHub.
+1. Push this repository to GitHub. The repository may be public; do not commit lesson source files or secrets.
 2. Deploy `app.py` in Streamlit Community Cloud.
-3. Add the secret:
+3. Add both secrets:
 
 ```toml
 OPENAI_API_KEY = "..."
+APP_ACCESS_PASSWORD = "choose-a-strong-internal-password"
 ```
 
-4. Upload a chapter ZIP, enter the subject, review detected file roles, and generate.
+4. The app-level password gate is implemented in `app.py`, so the Streamlit deployment itself may remain public while the workspace fails closed until the correct password is entered. The password value is never stored in GitHub.
+5. Upload a chapter ZIP, enter the subject, review detected file roles, and generate.
+
+## JoVE UI
+
+The Streamlit interface uses a JoVE-oriented visual system: JoVE red accents, internal-tool labeling, branded header, restrained white/gray surfaces, and a dedicated secure-workspace login screen. This changes presentation only; quiz parsing/generation logic is unchanged.
 
 ## Local run
 

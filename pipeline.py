@@ -11,7 +11,7 @@ from existing_quiz_parser import parse_existing_quiz_docx
 from input_parser import LessonBundle, load_lesson_sources
 from quiz_generator import TOTAL_GENERATED, generate_additional_questions
 
-PIPELINE_VERSION = "v1.0.0_quiz_library_expansion"
+PIPELINE_VERSION = "v1.1.0_auto_qa_repair"
 
 
 def _safe_filename(text: str) -> str:
@@ -109,6 +109,9 @@ def process_lesson(
         "generated_type_counts": generation_report.get("type_counts", {}),
         "generated_review_count": generation_report.get("review_count", 0),
         "generated_fail_count": generation_report.get("fail_count", 0),
+        "qa_passes": generation_report.get("qa_passes", 0),
+        "qa_repair_rounds": generation_report.get("qa_repair_rounds", 0),
+        "qa_replacements": generation_report.get("qa_replacements", 0),
         "existing_parse_flags": sum(1 for q in quiz_result.questions if q.get("review_level") in {"review", "fail"}),
         "warnings": warnings,
         "output_file": output_path,
