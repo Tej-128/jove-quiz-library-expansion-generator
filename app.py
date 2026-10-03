@@ -23,7 +23,7 @@ from pipeline import PIPELINE_VERSION, process_lesson
 from quiz_generator import GENERATED_TYPES, PER_TYPE, TOTAL_GENERATED
 from durable_queue import get_durable_job_status, get_file_bytes_by_id, submit_durable_job
 
-EXPECTED_BUILD = "v1.5.0_live_checkpoints_21q"
+EXPECTED_BUILD = "v1.6.0_durable_worker"
 EXPECTED_TOTAL_GENERATED = 21
 
 st.set_page_config(
