@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from latex_math import has_unwrapped_equation, latex_to_plain_text, normalize_latex_math
 
-GENERATOR_BUILD_VERSION = "v1.7.0_local_resumable_21q"
+GENERATOR_BUILD_VERSION = "v1.7.1_windows_safe_inputs"
 
 GENERATED_TYPES = [
     "Single Correct",
