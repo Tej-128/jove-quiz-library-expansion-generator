@@ -18,6 +18,8 @@ This build runs production batches locally through Streamlit so each completed l
 
 ## Windows production run
 
+The Windows launcher keeps the Python environment at `%USERPROFILE%\joveq_venv` instead of inside the repository. This avoids Windows path-length failures caused by Streamlit's deeply nested package files. The launcher also rebuilds that short-path environment once automatically if dependency installation fails.
+
 1. Download or clone this repository.
 2. Double-click RUN_LOCAL_WINDOWS.bat.
 3. The local Streamlit UI opens on http://127.0.0.1:8501.
