@@ -6,3 +6,6 @@ __pycache__/
 *.zip
 
 .streamlit/secrets.toml
+.venv/
+.jove_jobs/
+generation_progress_*.csv
