@@ -165,3 +165,22 @@ streamlit run app.py
 - The UI, pipeline, and quiz-generator build IDs must match before generation can start.
 - If Streamlit has a stale cached module after a deployment, the app stops with a visible reboot message instead of silently generating the previous 18-question configuration.
 - The required generated count is 21 questions per lesson across 7 types.
+
+
+## Durable production worker (v1.6.0)
+
+Large batches (10+ ready lessons) no longer run inside the Streamlit request/session process.
+
+The app uploads the source package to OpenAI Files with purpose user_data and creates a small queue manifest. A scheduled/manual GitHub Actions worker then runs the existing process_lesson pipeline outside Streamlit.
+
+Durability rules:
+- every successful lesson workbook is uploaded to secured OpenAI file storage immediately;
+- the worker discovers already-completed lesson IDs on restart and skips them;
+- each lesson gets up to three worker-level attempts in addition to the existing model-call retries;
+- one downloadable ZIP part is created for every 25 lessons;
+- later parts continue processing after earlier parts become downloadable;
+- GitHub Actions stores no lesson source files or quiz outputs as repository content or workflow artifacts;
+- the public Streamlit page can be closed after submission without stopping generation;
+- source/result files use a seven-day expiration when supported by the API.
+
+One-time repository setup: create the GitHub Actions repository secret OPENAI_API_KEY with the same API key configured in Streamlit Secrets. The workflow is .github/workflows/durable-quiz-worker.yml.

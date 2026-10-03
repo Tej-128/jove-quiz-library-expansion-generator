@@ -21,6 +21,7 @@ import quiz_generator as quiz_generator_module
 from input_parser import bundle_lessons, collect_uploaded_files
 from pipeline import PIPELINE_VERSION, process_lesson
 from quiz_generator import GENERATED_TYPES, PER_TYPE, TOTAL_GENERATED
+from durable_queue import get_durable_job_status, get_file_bytes_by_id, submit_durable_job
 
 EXPECTED_BUILD = "v1.5.0_live_checkpoints_21q"
 EXPECTED_TOTAL_GENERATED = 21
@@ -235,6 +236,96 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+def _active_job_id() -> str:
+    value = st.query_params.get("jove_job", "")
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
+@st.fragment(run_every="15s")
+def _render_durable_job(job_id: str):
+    try:
+        status = get_durable_job_status(api_key, job_id)
+    except Exception as exc:
+        st.error(f"Could not read durable job status: {type(exc).__name__}: {exc}")
+        return
+
+    if status.get("state") == "not_found":
+        st.error(status.get("message", "Durable job not found."))
+        return
+
+    st.markdown("### Durable batch status")
+    st.code(job_id)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Expected lessons", status.get("expected", 0))
+    c2.metric("Completed", status.get("completed", 0))
+    c3.metric("Failed", status.get("failed", 0))
+    c4.metric("ZIP parts ready", len(status.get("parts", [])))
+
+    state = status.get("state")
+    if state == "queued":
+        st.info(
+            "Job is safely queued outside the Streamlit session. The GitHub worker checks the queue every 5 minutes. "
+            "You can close this page; generation does not depend on this browser session."
+        )
+    elif state == "in_progress":
+        st.success(
+            "Background worker is processing the job. Completed lessons are checkpointed individually, so a worker restart resumes missing lessons instead of restarting the batch."
+        )
+    elif state == "completed":
+        st.success("Durable batch completed successfully.")
+    elif state == "completed_with_failures":
+        st.warning(
+            f"Durable batch finished with {status.get('failed', 0)} lesson(s) still failed after automatic retries."
+        )
+
+    st.caption(
+        "For immediate pickup instead of waiting for the 5-minute scheduler, open the GitHub Actions worker and click Run workflow."
+    )
+    st.link_button(
+        "Open durable GitHub worker",
+        "https://github.com/Tej-128/jove-quiz-library-expansion-generator/actions/workflows/durable-quiz-worker.yml",
+        use_container_width=True,
+    )
+
+    parts = status.get("parts", [])
+    if parts:
+        st.markdown("#### Completed downloadable parts")
+        st.caption("Each part contains up to 25 lesson workbooks and becomes available while later parts are still processing.")
+        for idx, part in enumerate(parts, 1):
+            cache_key = f"durable_part_bytes_{job_id}_{part['file_id']}"
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.write(part["name"])
+            with c2:
+                if st.button("Prepare", key=f"prepare_{job_id}_{part['file_id']}", use_container_width=True):
+                    with st.spinner("Preparing secure download..."):
+                        st.session_state[cache_key] = get_file_bytes_by_id(api_key, part["file_id"])
+            if cache_key in st.session_state:
+                st.download_button(
+                    f"Download {part['name']}",
+                    data=st.session_state[cache_key],
+                    file_name=part["name"],
+                    mime="application/zip",
+                    key=f"download_{job_id}_{part['file_id']}",
+                    on_click="ignore",
+                    use_container_width=True,
+                )
+
+
+active_job = _active_job_id()
+if active_job:
+    _render_durable_job(active_job)
+    if st.button("Start a new batch instead", use_container_width=True):
+        st.query_params.pop("jove_job", None)
+        for key in list(st.session_state.keys()):
+            if str(key).startswith("durable_part_bytes_"):
+                st.session_state.pop(key, None)
+        st.rerun()
+    st.stop()
+
 uploaded_files = st.file_uploader(
     "Upload chapter ZIP(s) or lesson source files",
     type=["zip", "docx", "vtt", "txt"],
@@ -286,10 +377,10 @@ with c3:
 if issues:
     st.warning(f"{len(issues)} lesson bundle(s) require input review. They will not be generated until the file-role ambiguity/missing file is fixed.")
 
-if len(ready) >= 50:
+if len(ready) >= 10:
     st.info(
-        f"Large-batch mode enabled for {len(ready)} ready lessons. "
-        f"The app will process up to {batch_workers} lessons in parallel and create a checkpoint ZIP part after every 25 successful lessons."
+        f"Durable production mode is required for this {len(ready)}-lesson batch. "
+        "The source package will be queued to a GitHub Actions worker, so browser disconnects, Streamlit reruns, and UI session resets cannot erase completed lesson work."
     )
 
 if not subject.strip():
@@ -297,6 +388,40 @@ if not subject.strip():
 
 if not api_key:
     st.warning("Configure OPENAI_API_KEY before generation.")
+
+if len(ready) >= 10:
+    st.markdown("---")
+    st.markdown("### Submit durable production batch")
+    st.write(
+        "This mode is intentionally detached from Streamlit. Every successful lesson workbook is checkpointed to secured OpenAI file storage immediately; GitHub Actions resumes only the missing lessons after any worker interruption."
+    )
+    st.warning(
+        "One-time prerequisite: add the same OPENAI_API_KEY to GitHub repository Settings → Secrets and variables → Actions → New repository secret. "
+        "The worker never stores lesson source files or quiz outputs in the public GitHub repository."
+    )
+
+    if st.button(
+        f"Submit {len(ready)} lessons to durable background worker",
+        type="primary",
+        use_container_width=True,
+        disabled=(not subject.strip() or not api_key),
+    ):
+        with st.spinner("Uploading secured source package and creating durable job..."):
+            job_info = submit_durable_job(
+                records=records,
+                ready_lesson_ids=[bundle.lesson_id for bundle in ready],
+                subject=subject,
+                model=model,
+                enable_ai_accuracy_qa=enable_ai_accuracy_qa,
+                workers=batch_workers,
+                api_key=api_key,
+                build_version=PIPELINE_VERSION,
+            )
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        st.session_state["active_upload_temp_dir"] = ""
+        st.query_params["jove_job"] = job_info["job_id"]
+        st.rerun()
+    st.stop()
 
 st.markdown("---")
 st.markdown("### Generate batch")
