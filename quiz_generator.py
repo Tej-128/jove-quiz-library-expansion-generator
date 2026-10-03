@@ -4,7 +4,11 @@ import hashlib
 import json
 import random
 import re
+import os
+import time
 from typing import Any, Callable
+
+from latex_math import has_unwrapped_equation, latex_to_plain_text, normalize_latex_math
 
 GENERATED_TYPES = [
     "Multi Correct",
@@ -20,6 +24,8 @@ MAX_RETRIES = 3
 MAX_QA_REPAIR_ROUNDS = 2
 NEAR_DUPLICATE_THRESHOLD = 0.88
 GROUNDING_MIN_OVERLAP = 0.25
+LLM_TIMEOUT_SECONDS = float(os.getenv("JOVE_LLM_TIMEOUT_SECONDS", "150"))
+LLM_SDK_MAX_RETRIES = int(os.getenv("JOVE_LLM_MAX_RETRIES", "1"))
 
 REQUIRED_FIELDS = [
     "lesson_id",
@@ -50,6 +56,7 @@ ABSOLUTE SOURCE RULES
 3. Avoid duplicating or closely paraphrasing any existing quiz question supplied in the exclusion list.
 4. No explanations or rationales are required.
 5. Return ONLY a valid JSON array. No markdown, code fences, or prose.
+6. EQUATIONS / MATHEMATICS: Every equation, formula, inequality, reaction equation, or mathematical expression that appears in question_content, any option field, or a text-valued right_answer MUST be written as LaTeX code using inline delimiters \\( ... \\). Example: E = mc² must be written as \\(E = mc^{2}\\). Do not leave equation symbols such as =, ≤, ≥, ≠, ≈, →, ↔, or ⇌ outside LaTeX delimiters. Ordinary non-mathematical numbers and percentages in prose do not need LaTeX.
 
 OUTPUT SCHEMA
 Each object must contain exactly:
@@ -97,6 +104,7 @@ QA_SYSTEM_PROMPT = """You are a strict JoVE quiz quality reviewer.
 Use ONLY the supplied lesson source. Do not use outside knowledge.
 The EXISTING QUIZ QUESTIONS are approved content used only as a duplication/exclusion reference. Do not judge or rewrite them.
 Review the GENERATED QUESTIONS against the lesson source, against the existing quiz questions, and against one another.
+Treat LaTeX math notation as the required representation of equations. A mathematically correct equation expressed in LaTeX is equivalent to the same source equation in plain text.
 Return only a JSON array. For every generated question return exactly:
 question_index, status, issue
 
@@ -125,7 +133,13 @@ def call_llm(system: str, user: str, api_key: str, model: str) -> str:
     except Exception as exc:
         raise LLMRequestError("OpenAI Python SDK is missing or incompatible.") from exc
 
-    client = OpenAI(api_key=api_key)
+    # Never allow a single network/API call to hang the Streamlit batch forever.
+    # OpenAI SDK retry + timeout values are configurable through environment variables.
+    client = OpenAI(
+        api_key=api_key,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=LLM_SDK_MAX_RETRIES,
+    )
     args = {
         "model": model,
         "messages": [
@@ -133,6 +147,7 @@ def call_llm(system: str, user: str, api_key: str, model: str) -> str:
             {"role": "user", "content": user},
         ],
     }
+    started = time.monotonic()
     try:
         try:
             response = client.chat.completions.create(**args, max_completion_tokens=12000)
@@ -141,7 +156,10 @@ def call_llm(system: str, user: str, api_key: str, model: str) -> str:
                 raise
             response = client.chat.completions.create(**args, max_tokens=12000)
     except Exception as exc:
-        raise LLMRequestError(str(exc)) from exc
+        elapsed = int(time.monotonic() - started)
+        raise LLMRequestError(
+            f"OpenAI request failed after {elapsed}s (timeout={LLM_TIMEOUT_SECONDS:.0f}s): {exc}"
+        ) from exc
     return response.choices[0].message.content or ""
 
 
@@ -161,7 +179,7 @@ def _as_string(value: Any) -> str:
 
 
 def _norm(text: str) -> str:
-    text = text.lower()
+    text = latex_to_plain_text(text).lower()
     text = re.sub(r"---\[dropdown\s*\d+\]---", " dropdownplaceholder ", text)
     text = re.sub(r"___\[1\]___", " blankplaceholder ", text)
     text = re.sub(r"[^a-z0-9]+", " ", text)
@@ -180,7 +198,7 @@ def _token_jaccard(left: str, right: str) -> float:
 
 
 def _significant_terms(text: str) -> set[str]:
-    normalized = re.sub(r"[^A-Za-z0-9]+", " ", text).lower()
+    normalized = re.sub(r"[^A-Za-z0-9]+", " ", latex_to_plain_text(text)).lower()
     return {
         token for token in normalized.split()
         if len(token) >= 4 and token not in STOPWORDS and not token.isdigit()
@@ -262,7 +280,14 @@ def validate_generated_question(
     q["review_level"] = "none"
     q["review_reason"] = ""
 
+    # Required output convention: equations/formulas are stored as inline LaTeX code.
+    # This is a representation-only normalization; it does not alter ordinary prose.
+    for math_field in ["question_content", "option_1", "option_2", "option_3", "option_4"]:
+        q[math_field] = normalize_latex_math(q[math_field])
+
     qtype = q["question_type"]
+    if qtype == "Fill in the Blanks":
+        q["right_answer"] = normalize_latex_math(q["right_answer"])
     content = q["question_content"]
     if qtype not in GENERATED_TYPES:
         errors.append(f"Unknown generated question type '{qtype}'.")
@@ -271,6 +296,13 @@ def validate_generated_question(
         errors.append("Question content is empty.")
     if "|" in content:
         errors.append("Question content contains illegal pipe character.")
+
+    math_check_fields = ["question_content", "option_1", "option_2", "option_3", "option_4"]
+    if qtype == "Fill in the Blanks":
+        math_check_fields.append("right_answer")
+    unwrapped = [field for field in math_check_fields if has_unwrapped_equation(q.get(field, ""))]
+    if unwrapped:
+        errors.append("Equation/formula must be written as inline LaTeX in: " + ", ".join(unwrapped) + ".")
 
     for key in ["option_1", "option_2", "option_3", "option_4"]:
         if q[key].lower() == "none":
@@ -683,6 +715,7 @@ def generate_additional_questions(
     completed_repair_rounds = 0
 
     def notify(msg: str, pct: int | None = None):
+        print(f"[quiz generation {lesson_id}] [{pct if pct is not None else '?'}%] {msg}", flush=True)
         if progress_callback:
             progress_callback(msg, pct)
 
