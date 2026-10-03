@@ -11,7 +11,7 @@ from existing_quiz_parser import parse_existing_quiz_docx
 from input_parser import LessonBundle, load_lesson_sources
 from quiz_generator import TOTAL_GENERATED, generate_additional_questions
 
-PIPELINE_VERSION = "v1.1.0_auto_qa_repair"
+PIPELINE_VERSION = "v1.3.0_latex_math"
 
 
 def _safe_filename(text: str) -> str:
@@ -36,22 +36,25 @@ def process_lesson(
     if not api_key.strip():
         raise ValueError("OpenAI API key is required.")
 
+    def notify(message: str, pct: int | None = None):
+        print(f"[lesson {bundle.lesson_id}] [{pct if pct is not None else '?'}%] {message}", flush=True)
+        if progress_callback:
+            progress_callback(message, pct)
+
+    notify("Reading existing approved quiz...", 5)
     quiz_result = parse_existing_quiz_docx(bundle.quiz.path, bundle.lesson_id)
     if quiz_result.error:
         raise RuntimeError(f"Existing quiz could not be read: {quiz_result.error}")
     if not quiz_result.questions:
         raise RuntimeError("No existing quiz questions were parsed; generation stopped to avoid losing approved content.")
 
+    notify("Loading PageText and Transcript/CC source...", 15)
     pt_text, transcript_text, source_warnings = load_lesson_sources(bundle)
     if not pt_text.strip() and not transcript_text.strip():
         raise RuntimeError("Neither PageText nor Transcript/CC contains readable source text.")
 
     chapter_name = quiz_result.chapter_name or bundle.chapter_key or "Uploaded Chapter"
     lesson_title = quiz_result.video_title or Path(bundle.quiz.name).stem
-
-    def notify(message: str, pct: int | None = None):
-        if progress_callback:
-            progress_callback(message, pct)
 
     notify(f"Generating {TOTAL_GENERATED} new questions for lesson {bundle.lesson_id}...", 35)
     generated, generation_report = generate_additional_questions(
