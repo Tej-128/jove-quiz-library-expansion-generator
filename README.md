@@ -167,7 +167,7 @@ streamlit run app.py
 - The required generated count is 21 questions per lesson across 7 types.
 
 
-## Durable production worker (v1.6.0)
+## Durable production worker (v1.6.0_durable_worker)
 
 Large batches (10+ ready lessons) no longer run inside the Streamlit request/session process.
 
