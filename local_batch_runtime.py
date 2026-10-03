@@ -102,25 +102,56 @@ def create_local_job(
     job_id = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     job_dir = jobs_root / job_id
     input_dir = job_dir / "input"
+    input_files_dir = input_dir / "files"
     work_dir = job_dir / "work"
-    input_dir.mkdir(parents=True, exist_ok=False)
+    input_files_dir.mkdir(parents=True, exist_ok=False)
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # Persist uploaded source files under deliberately SHORT physical filenames.
+    # The original names/relative paths are preserved in a manifest so fuzzy role
+    # detection and chapter/lesson mapping behave exactly as before, while Windows
+    # path-length limits can no longer break shutil.copy2.
     copied = 0
-    used: set[str] = set()
+    input_manifest: list[dict[str, Any]] = []
     for idx, record in enumerate(records, 1):
-        relative = _safe_relative_path(
-            getattr(record, "relative_path", "") or getattr(record, "name", ""),
-            f"file_{idx:06d}_{getattr(record, 'name', 'source')}",
+        source = Path(str(record.path))
+        if not source.is_file():
+            raise FileNotFoundError(
+                f"Uploaded source file disappeared before job persistence: "
+                f"{getattr(record, 'relative_path', '') or getattr(record, 'name', source.name)} "
+                f"(temporary path: {source})"
+            )
+
+        extension = str(getattr(record, "extension", "") or source.suffix).lower()
+        if extension not in {".docx", ".vtt", ".txt"}:
+            extension = source.suffix.lower() or ".bin"
+
+        stored_name = f"{idx:06d}{extension}"
+        target = input_files_dir / stored_name
+        shutil.copy2(source, target)
+
+        input_manifest.append(
+            {
+                "name": str(getattr(record, "name", source.name)),
+                "stored_path": str(Path("files") / stored_name),
+                "relative_path": str(
+                    getattr(record, "relative_path", "")
+                    or getattr(record, "name", source.name)
+                ),
+                "extension": extension,
+                "lesson_id": str(getattr(record, "lesson_id", "") or ""),
+                "chapter_key": str(getattr(record, "chapter_key", "") or ""),
+            }
         )
-        key = relative.as_posix().lower()
-        if key in used:
-            relative = Path(f"duplicate_{idx:06d}") / relative
-        used.add(relative.as_posix().lower())
-        target = input_dir / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(record.path, target)
         copied += 1
+
+    _atomic_json(
+        input_dir / "input_manifest.json",
+        {
+            "files": input_manifest,
+            "count": copied,
+        },
+    )
 
     config = {
         "job_id": job_id,
@@ -128,6 +159,7 @@ def create_local_job(
         "created_at": int(time.time()),
         "output_dir": str(output_root),
         "input_dir": str(input_dir),
+        "input_manifest": str(input_dir / "input_manifest.json"),
         "work_dir": str(work_dir),
         "subject": subject.strip(),
         "model": model,
