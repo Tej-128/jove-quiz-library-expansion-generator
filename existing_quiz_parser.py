@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from input_parser import read_docx_lines
+from latex_math import normalize_latex_math
 
 OPTION_RE = re.compile(r"^\s*(\*)?\s*([A-Da-d])\s*[\)\.\:\-]\s*(\*)?\s*(.+?)\s*$")
 NUMBERED_QUESTION_RE = re.compile(r"^\s*\d+\s*[\)\.]\s*(.+?)\s*$")
@@ -74,7 +75,9 @@ def _finalize_question(
 ) -> dict[str, Any]:
     # Preserve wording exactly except for structural Word markers: question number,
     # option label, and '*' answer indicator. Option order remains unchanged.
-    option_values = [opt[2] for opt in options[:4]]
+    # Preserve approved wording; the only allowed representation change is that
+    # explicit equations/formulas are normalized to inline LaTeX code.
+    option_values = [normalize_latex_math(opt[2]) for opt in options[:4]]
     while len(option_values) < 4:
         option_values.append("")
 
@@ -110,7 +113,7 @@ def _finalize_question(
     return {
         "lesson_id": lesson_id,
         "question_index": index,
-        "question_content": _strip_question_number(question_text),
+        "question_content": normalize_latex_math(_strip_question_number(question_text)),
         "question_type": question_type,
         "option_1": option_values[0],
         "option_2": option_values[1],
