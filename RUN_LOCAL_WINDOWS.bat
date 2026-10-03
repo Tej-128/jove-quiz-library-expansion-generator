@@ -41,4 +41,4 @@ echo Starting JoVE local production app...
 echo Keep this command window open while using the Streamlit UI.
 echo Completed lesson files are written directly to your chosen output folder.
 echo.
-".venv\Scripts\python.exe" -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+".venv\Scripts\python.exe" -m streamlit run local_app.py --server.address 127.0.0.1 --server.port 8501
