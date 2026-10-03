@@ -194,6 +194,13 @@ def _file_id(file_obj: Any) -> str:
     return str(getattr(file_obj, "id", "") or "")
 
 
+def _result_lesson_id(filename: str, job_id: str) -> str:
+    prefix = f"{RESULT_PREFIX}{job_id}_"
+    if not filename.startswith(prefix) or "__" not in filename:
+        return ""
+    return filename[len(prefix):].split("__", 1)[0].strip()
+
+
 def _latest_json(client: OpenAI, files: list[Any]) -> dict[str, Any] | None:
     if not files:
         return None
@@ -228,16 +235,30 @@ def get_durable_job_status(api_key: str, job_id: str) -> dict[str, Any]:
     status_files = [f for f in matching if _file_name(f).startswith(f"{STATUS_PREFIX}{job_id}_")]
     done_files = [f for f in matching if _file_name(f) == f"{DONE_PREFIX}{job_id}.json"]
     error_files = [f for f in matching if _file_name(f).startswith(f"{ERROR_PREFIX}{job_id}_")]
+    result_files = [f for f in matching if _file_name(f).startswith(f"{RESULT_PREFIX}{job_id}_")]
 
     latest_status = _latest_json(client, status_files) or {}
     done_payload = _latest_json(client, done_files) or {}
 
-    completed = int(done_payload.get("completed", latest_status.get("completed", 0)) or 0)
+    completed_ids = sorted({
+        lesson_id
+        for lesson_id in (_result_lesson_id(_file_name(f), job_id) for f in result_files)
+        if lesson_id
+    })
+    completed = len(completed_ids)
+    if done_files:
+        completed = int(done_payload.get("completed", completed) or completed)
     failed = int(done_payload.get("failed", latest_status.get("failed", 0)) or 0)
+
+    recent_completed = [
+        _result_lesson_id(_file_name(f), job_id)
+        for f in sorted(result_files, key=_file_created, reverse=True)[:8]
+    ]
+    recent_completed = [lesson_id for lesson_id in recent_completed if lesson_id]
 
     if done_files:
         state = "completed" if failed == 0 else "completed_with_failures"
-    elif status_files or part_files:
+    elif status_files or part_files or result_files:
         state = "in_progress"
     else:
         state = "queued"
@@ -251,6 +272,7 @@ def get_durable_job_status(api_key: str, job_id: str) -> dict[str, Any]:
         "expected": expected,
         "completed": completed,
         "failed": failed,
+        "recent_completed": recent_completed,
         "part_size": int(queue_info.get("part_size", 25) or 25),
         "submitted_at": queue_info.get("submitted_at"),
         "parts": [
