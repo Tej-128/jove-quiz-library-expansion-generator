@@ -8,7 +8,7 @@ For each lesson, the tool:
 
 1. Detects the existing quiz Word document, PageText, and Transcript/CC using folder lesson IDs plus fuzzy role detection.
 2. Parses every existing Single Correct / Multi Correct Word question.
-3. Uses the `*` marker in existing Word options as the answer key. Existing questions are **not re-solved, rewritten, corrected, shuffled, or paraphrased**.
+3. Uses the `*` marker in existing Word options as the answer key. Existing questions are **not re-solved, corrected, shuffled, or paraphrased**; the only allowed representation change is the required equation + LaTeX formatting.
 4. Removes document scaffolding such as `Chapter Title`, `Video Title`, `Writer`, `End-of-Lesson Quiz`, difficulty headings, and `End-of-Chapter Quiz Question` from quiz rows. The actual question under those headings is still transferred.
 5. Converts the existing questions to the same 10-column Excel quiz schema used by the current JoVE quiz generator.
 6. Uses only PageText + Transcript/cleaned CC as the source for new questions.
@@ -23,7 +23,7 @@ For each lesson, the tool:
 8. Prevents exact/near duplicates against both the existing quiz and the newly generated questions. AI QA also receives the existing quiz as an exclusion reference so it can catch semantic overlap that simple text matching misses.
 9. Automatically replaces generated questions that fail QA or receive a substantive duplicate/source/ambiguity review flag, then re-runs QA. Up to two repair rounds are attempted before a question is left for manual review.
 10. Randomizes answer/choice positions for generated choice-based formats while never shuffling existing Word questions.
-11. Stores every equation/formula/reaction equation in quiz text as inline LaTeX code using `\( ... \)`. This applies to newly generated questions and to explicit equations encountered while transferring existing Word quiz text; ordinary prose is not rewritten.
+11. Stores every equation/formula/reaction equation in the review format `(Actual equation) \(LaTeX code\)`. Example: `(E = mc²) \(E = mc^{2}\)`. This applies to newly generated questions and to explicit equations encountered while transferring existing Word quiz text; ordinary prose is not rewritten.
 12. Keeps `Match the following` and `Categorisation` in the established JoVE format: the correct relationship/category structure remains embedded in the option fields and `Right Answer` stays blank.
 13. Appends all 21 generated questions below the existing quiz rows.
 14. Colors only unresolved questions requiring manual review in Excel:
@@ -132,7 +132,7 @@ streamlit run app.py
 
 ## Resilient batch execution (v1.2.0)
 
-- OpenAI requests use an explicit configurable timeout (\`JOVE_LLM_TIMEOUT_SECONDS\`, default 150 seconds) and one SDK retry by default (\`JOVE_LLM_MAX_RETRIES\`).
+- OpenAI requests use an explicit configurable timeout (\`JOVE_LLM_TIMEOUT_SECONDS\`, default 180 seconds) and three SDK retries by default (\`JOVE_LLM_MAX_RETRIES\`).
 - The Streamlit batch updates a live lesson-results table after every lesson.
 - Completed lesson outputs are checkpointed into a partial ZIP during the run.
 - Per-lesson failures are shown immediately and the batch continues.

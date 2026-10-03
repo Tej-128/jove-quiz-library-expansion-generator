@@ -287,8 +287,8 @@ def validate_generated_question(
     q["review_level"] = "none"
     q["review_reason"] = ""
 
-    # Required output convention: equations/formulas are stored as inline LaTeX code.
-    # This is a representation-only normalization; it does not alter ordinary prose.
+    # Required output convention: equations/formulas use the dual review form
+    # (Actual equation) followed by its inline LaTeX code. Ordinary prose is untouched.
     for math_field in ["question_content", "option_1", "option_2", "option_3", "option_4"]:
         q[math_field] = normalize_latex_math(q[math_field])
 
@@ -309,7 +309,7 @@ def validate_generated_question(
         math_check_fields.append("right_answer")
     unwrapped = [field for field in math_check_fields if has_unwrapped_equation(q.get(field, ""))]
     if unwrapped:
-        errors.append("Equation/formula must be written as inline LaTeX in: " + ", ".join(unwrapped) + ".")
+        errors.append("Equation/formula must use (Actual equation) followed by inline LaTeX in: " + ", ".join(unwrapped) + ".")
 
     for key in ["option_1", "option_2", "option_3", "option_4"]:
         if q[key].lower() == "none":
