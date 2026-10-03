@@ -264,6 +264,14 @@ def _render_durable_job(job_id: str):
     c3.metric("Failed", status.get("failed", 0))
     c4.metric("ZIP parts ready", len(status.get("parts", [])))
 
+    expected_count = int(status.get("expected", 0) or 0)
+    completed_count = int(status.get("completed", 0) or 0)
+    progress_value = 0.0 if expected_count <= 0 else min(1.0, completed_count / expected_count)
+    st.progress(progress_value, text=f"{completed_count}/{expected_count} lessons checkpointed")
+    recent_completed = status.get("recent_completed", []) or []
+    if recent_completed:
+        st.caption("Most recently checkpointed: " + ", ".join(recent_completed))
+
     state = status.get("state")
     if state == "queued":
         st.info(
