@@ -1,0 +1,27 @@
+name: Local Production Syntax Check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile production Python files
+        run: |
+          python -m py_compile local_app.py
+          python -m py_compile local_batch_runtime.py
+          python -m py_compile local_batch_worker.py
+          python -m py_compile local_batch_supervisor.py
+          python -m py_compile input_parser.py
+          python -m py_compile pipeline.py
+          python -m py_compile quiz_generator.py
+          python -m py_compile excel_export.py
+          python -m py_compile existing_quiz_parser.py
+          python -m py_compile latex_math.py
