@@ -253,10 +253,14 @@ if not uploaded_files:
     st.stop()
 
 old_temp = st.session_state.get("upload_temp_dir", "")
-if old_temp and os.path.isdir(old_temp):
+
+# Build the new extraction completely BEFORE deleting the previous rerun's temp
+# folder. This avoids invalidating FileRecord paths during Streamlit button reruns.
+records, upload_errors, temp_dir = collect_uploaded_files(uploaded_files)
+
+if old_temp and old_temp != temp_dir and os.path.isdir(old_temp):
     shutil.rmtree(old_temp, ignore_errors=True)
 
-records, upload_errors, temp_dir = collect_uploaded_files(uploaded_files)
 st.session_state["upload_temp_dir"] = temp_dir
 bundles = bundle_lessons(records)
 
