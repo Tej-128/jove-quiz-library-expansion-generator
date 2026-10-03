@@ -1,6 +1,6 @@
 # JoVE Quiz Library Expansion Generator
 
-Current production build: v1.7.0_local_resumable_21q
+Current production build: v1.7.1_windows_safe_inputs
 
 This build runs production batches locally through Streamlit so each completed lesson workbook is written directly to a Windows folder and is not dependent on a hosted Streamlit session.
 
@@ -67,3 +67,7 @@ Option 2
 Option 3
 Option 4
 Right Answer
+
+## Windows-safe input persistence
+
+Uploaded source files are persisted under short physical filenames with an input manifest before the detached batch worker starts. Original filenames, relative paths, lesson IDs, and chapter mapping are preserved in the manifest, preventing Windows path-length/FileNotFound errors without changing quiz-generation behavior.
