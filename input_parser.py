@@ -209,6 +209,14 @@ def collect_uploaded_files(uploaded_files) -> tuple[list[FileRecord], list[str],
     counter = 0
 
     for uploaded in uploaded_files or []:
+        # Streamlit UploadedFile objects can retain their read position across
+        # script reruns. Always rewind before extracting/saving so a button rerun
+        # cannot produce an empty or partial source package.
+        try:
+            uploaded.seek(0)
+        except Exception:
+            pass
+
         upload_name = getattr(uploaded, "name", "uploaded")
         lower = upload_name.lower()
         if lower.endswith(".zip"):
