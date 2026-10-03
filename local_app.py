@@ -18,7 +18,7 @@ from local_batch_runtime import (
 from pipeline import PIPELINE_VERSION
 from quiz_generator import GENERATED_TYPES, PER_TYPE, TOTAL_GENERATED
 
-EXPECTED_BUILD = "v1.7.0_local_resumable_21q"
+EXPECTED_BUILD = "v1.7.1_windows_safe_inputs"
 
 st.set_page_config(
     page_title="JoVE Quiz Library Expansion Generator",
