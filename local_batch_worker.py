@@ -370,7 +370,7 @@ def main(job_dir: str) -> int:
             persist(
                 "running",
                 f"Processing {len(future_map)} lesson(s) in retry round {attempt_round}/{max_attempts}.",
-                len(future_map),
+                min(current_workers, len(future_map)),
             )
 
             unfinished = set(future_map)
@@ -426,7 +426,7 @@ def main(job_dir: str) -> int:
                     persist(
                         "running",
                         f"Completed {completed_now}/{len(lesson_ids)} lessons.",
-                        len(unfinished),
+                        min(current_workers, len(unfinished)),
                     )
 
         pending = [
