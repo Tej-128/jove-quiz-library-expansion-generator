@@ -32,6 +32,9 @@ GRAY_FILL = PatternFill("solid", fgColor="E7E6E6")
 THIN_GRAY = Border(
     bottom=Side(style="thin", color="D9E1F2"),
 )
+SECTION_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=10)
+EXISTING_SECTION_FILL = PatternFill("solid", fgColor="4472C4")
+NEW_SECTION_FILL = PatternFill("solid", fgColor="D71920")
 
 
 def _right_answer_value(question: dict[str, Any]):
@@ -57,7 +60,23 @@ def _row_fill(question: dict[str, Any]):
         return RED_FILL
     if level == "review":
         return YELLOW_FILL
+    origin = str(question.get("origin", "")).lower()
+    if origin == "existing":
+        return BLUE_FILL
+    if origin == "generated":
+        return GREEN_FILL
     return None
+
+
+def _write_section_row(ws, row: int, label: str, fill: PatternFill) -> None:
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=len(COLUMNS))
+    cell = ws.cell(row, 1, label)
+    cell.font = SECTION_FONT
+    cell.fill = fill
+    cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[row].height = 24
+    for col in range(1, len(COLUMNS) + 1):
+        ws.cell(row, col).fill = fill
 
 
 def _write_question_row(ws, row: int, question: dict[str, Any], chapter_name: str) -> None:
@@ -151,8 +170,11 @@ def _write_summary(
     row += 1
     ws.cell(row, 1, "Color legend").font = BOLD_FONT
     row += 1
-    ws.cell(row, 1, "No fill")
-    ws.cell(row, 2, "Passed automated checks / existing question parsed normally")
+    ws.cell(row, 1, "Blue").fill = BLUE_FILL
+    ws.cell(row, 2, "Existing approved question transferred from the Word quiz")
+    row += 1
+    ws.cell(row, 1, "Green").fill = GREEN_FILL
+    ws.cell(row, 2, "New AI-generated question that passed automated checks")
     row += 1
     ws.cell(row, 1, "Yellow").fill = YELLOW_FILL
     ws.cell(row, 2, "Manual review recommended")
@@ -205,7 +227,7 @@ def build_lesson_workbook(
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Quiz"
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "A3"
     ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
@@ -214,16 +236,38 @@ def build_lesson_workbook(
     ws.print_title_rows = "1:1"
     _write_headers(ws)
 
-    combined = []
-    for q in existing_questions:
-        combined.append(dict(q))
-    for q in generated_questions:
-        combined.append(dict(q))
+    existing_prepared = [dict(q) for q in existing_questions]
+    generated_prepared = [dict(q) for q in generated_questions]
 
-    # Continuous question indices: existing Word questions first, then all 18 new questions.
-    for idx, q in enumerate(combined, 1):
+    # Keep the established 10-column schema, but make the two origins unmistakable
+    # for reviewers through full-width section bars and row fills.
+    row = 2
+    _write_section_row(
+        ws,
+        row,
+        f"EXISTING APPROVED QUESTIONS - {len(existing_prepared)} transferred from source Word quiz",
+        EXISTING_SECTION_FILL,
+    )
+    row += 1
+
+    for idx, q in enumerate(existing_prepared, 1):
         q["question_index"] = idx
-        _write_question_row(ws, idx + 1, q, chapter_name)
+        _write_question_row(ws, row, q, chapter_name)
+        row += 1
+
+    _write_section_row(
+        ws,
+        row,
+        f"NEW AI-GENERATED QUESTIONS - {len(generated_prepared)} additional questions for review",
+        NEW_SECTION_FILL,
+    )
+    row += 1
+
+    start_index = len(existing_prepared) + 1
+    for offset, q in enumerate(generated_prepared):
+        q["question_index"] = start_index + offset
+        _write_question_row(ws, row, q, chapter_name)
+        row += 1
 
     _write_summary(
         wb,
@@ -232,8 +276,8 @@ def build_lesson_workbook(
         lesson_id=lesson_id,
         lesson_title=lesson_title,
         source_files=source_files,
-        existing_questions=combined[: len(existing_questions)],
-        generated_questions=combined[len(existing_questions) :],
+        existing_questions=existing_prepared,
+        generated_questions=generated_prepared,
         warnings=warnings or [],
     )
     return wb

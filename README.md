@@ -12,7 +12,8 @@ For each lesson, the tool:
 4. Removes document scaffolding such as `Chapter Title`, `Video Title`, `Writer`, `End-of-Lesson Quiz`, difficulty headings, and `End-of-Chapter Quiz Question` from quiz rows. The actual question under those headings is still transferred.
 5. Converts the existing questions to the same 10-column Excel quiz schema used by the current JoVE quiz generator.
 6. Uses only PageText + Transcript/cleaned CC as the source for new questions.
-7. Generates exactly 18 additional questions per lesson:
+7. Generates exactly 21 additional questions per lesson:
+   - 3 Single Correct
    - 3 Multi Correct
    - 3 True or False
    - 3 Fill in the Blanks
@@ -24,7 +25,7 @@ For each lesson, the tool:
 10. Randomizes answer/choice positions for generated choice-based formats while never shuffling existing Word questions.
 11. Stores every equation/formula/reaction equation in quiz text as inline LaTeX code using `\( ... \)`. This applies to newly generated questions and to explicit equations encountered while transferring existing Word quiz text; ordinary prose is not rewritten.
 12. Keeps `Match the following` and `Categorisation` in the established JoVE format: the correct relationship/category structure remains embedded in the option fields and `Right Answer` stays blank.
-13. Appends all 18 generated questions below the existing quiz rows.
+13. Appends all 21 generated questions below the existing quiz rows.
 14. Colors only unresolved questions requiring manual review in Excel:
     - Yellow: manual review recommended, including duplicate-only issues that remain after repair attempts
     - Red: substantive critical issue such as unsupported/incorrect/ambiguous/malformed content
@@ -102,7 +103,7 @@ Option 4
 Right Answer
 ```
 
-Existing questions appear first, in original order. The 18 generated questions are appended directly below them. A second `QA Summary` sheet documents flags and source files.
+Existing questions appear first, in original order. The 21 generated questions are appended in a clearly labeled AI-generated section below them. A second `QA Summary` sheet documents flags and source files.
 
 ## Streamlit deployment
 
@@ -140,9 +141,21 @@ streamlit run app.py
 
 ## Equation / LaTeX rule (v1.3.0)
 
-- Every explicit equation, formula, inequality, or reaction equation in output quiz text is represented as inline LaTeX code: \`\( ... \)\`.
+- Every explicit equation, formula, inequality, or reaction equation uses the dual review format: \`(Actual equation) \\(LaTeX code\\)\`. Example: \`(E = mc²) \\(E = mc^{2}\\)\`.
 - The generator prompt requires LaTeX, and deterministic validation/normalization prevents obvious raw equation relations from being exported outside LaTeX delimiters.
 - Duplicate and grounding checks strip LaTeX markup before comparison so required math formatting does not create false duplicate/source flags.
 - Existing quiz prose remains unchanged except for the equation representation itself.
 - \`Match the following\` and \`Categorisation\` behavior is intentionally unchanged; \`Right Answer\` remains blank for these two types.
 
+
+
+## Large-batch mode (v1.4.0)
+
+- Supports uploads containing 50, 100, 500, or more lesson bundles, subject to the hosting service's runtime/memory limits and the OpenAI account's rate limits.
+- Processes lessons concurrently with a configurable 1-6 worker pool; the Streamlit default is 4.
+- OpenAI requests use a 180-second timeout and three SDK retries by default.
+- File-role scoring is cached so each DOCX is content-sniffed only once instead of once per role.
+- ZIP uploads are extracted from a disk-backed temporary archive instead of creating another full in-memory ZIP copy.
+- The app no longer rebuilds the full result ZIP after every lesson. It builds checkpoint ZIP parts every 25 successful lessons and creates the full ZIP once at the end.
+- A failed lesson does not stop the remaining lessons.
+- For very large runs, checkpoint ZIP parts remain available in the current Streamlit session if the batch exits normally or hits a caught orchestration error.

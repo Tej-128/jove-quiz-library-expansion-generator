@@ -11,7 +11,7 @@ from existing_quiz_parser import parse_existing_quiz_docx
 from input_parser import LessonBundle, load_lesson_sources
 from quiz_generator import TOTAL_GENERATED, generate_additional_questions
 
-PIPELINE_VERSION = "v1.3.0_latex_math"
+PIPELINE_VERSION = "v1.4.0_scale_singlecorrect_dual_latex"
 
 
 def _safe_filename(text: str) -> str:

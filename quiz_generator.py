@@ -11,6 +11,7 @@ from typing import Any, Callable
 from latex_math import has_unwrapped_equation, latex_to_plain_text, normalize_latex_math
 
 GENERATED_TYPES = [
+    "Single Correct",
     "Multi Correct",
     "True or False",
     "Fill in the Blanks",
@@ -24,8 +25,8 @@ MAX_RETRIES = 3
 MAX_QA_REPAIR_ROUNDS = 2
 NEAR_DUPLICATE_THRESHOLD = 0.88
 GROUNDING_MIN_OVERLAP = 0.25
-LLM_TIMEOUT_SECONDS = float(os.getenv("JOVE_LLM_TIMEOUT_SECONDS", "150"))
-LLM_SDK_MAX_RETRIES = int(os.getenv("JOVE_LLM_MAX_RETRIES", "1"))
+LLM_TIMEOUT_SECONDS = float(os.getenv("JOVE_LLM_TIMEOUT_SECONDS", "180"))
+LLM_SDK_MAX_RETRIES = int(os.getenv("JOVE_LLM_MAX_RETRIES", "3"))
 
 REQUIRED_FIELDS = [
     "lesson_id",
@@ -56,13 +57,19 @@ ABSOLUTE SOURCE RULES
 3. Avoid duplicating or closely paraphrasing any existing quiz question supplied in the exclusion list.
 4. No explanations or rationales are required.
 5. Return ONLY a valid JSON array. No markdown, code fences, or prose.
-6. EQUATIONS / MATHEMATICS: Every equation, formula, inequality, reaction equation, or mathematical expression that appears in question_content, any option field, or a text-valued right_answer MUST be written as LaTeX code using inline delimiters \\( ... \\). Example: E = mc² must be written as \\(E = mc^{2}\\). Do not leave equation symbols such as =, ≤, ≥, ≠, ≈, →, ↔, or ⇌ outside LaTeX delimiters. Ordinary non-mathematical numbers and percentages in prose do not need LaTeX.
+6. EQUATIONS / MATHEMATICS: Every equation, formula, inequality, reaction equation, or mathematical expression that appears in question_content, any option field, or a text-valued right_answer MUST use this exact review format: (Actual equation) followed immediately by its inline LaTeX code. Example: (E = mc²) \\(E = mc^{2}\\). Preserve the readable equation inside parentheses, then provide the LaTeX representation. Do not leave equation symbols such as =, ≤, ≥, ≠, ≈, →, ↔, or ⇌ outside this dual format. Ordinary non-mathematical numbers and percentages in prose do not need LaTeX.
 
 OUTPUT SCHEMA
 Each object must contain exactly:
 lesson_id, question_index, question_content, question_type, option_1, option_2, option_3, option_4, right_answer.
 
 QUESTION TYPES
+Single Correct:
+- Exactly four distinct non-empty options.
+- Exactly one option is correct.
+- right_answer is one option position from "1" to "4".
+- Correct positions must vary across the three generated questions.
+
 Multi Correct:
 - Exactly four distinct non-empty options.
 - Exactly 2 or 3 options are correct.
@@ -104,7 +111,7 @@ QA_SYSTEM_PROMPT = """You are a strict JoVE quiz quality reviewer.
 Use ONLY the supplied lesson source. Do not use outside knowledge.
 The EXISTING QUIZ QUESTIONS are approved content used only as a duplication/exclusion reference. Do not judge or rewrite them.
 Review the GENERATED QUESTIONS against the lesson source, against the existing quiz questions, and against one another.
-Treat LaTeX math notation as the required representation of equations. A mathematically correct equation expressed in LaTeX is equivalent to the same source equation in plain text.
+Treat the required equation representation as: (Actual equation) followed by its inline LaTeX code. Example: (E = mc²) \\(E = mc^{2}\\). The readable and LaTeX copies represent the same equation and must not be treated as duplication.
 Return only a JSON array. For every generated question return exactly:
 question_index, status, issue
 
@@ -308,7 +315,17 @@ def validate_generated_question(
         if q[key].lower() == "none":
             q[key] = ""
 
-    if qtype == "Multi Correct":
+    if qtype == "Single Correct":
+        options = [q[f"option_{i}"] for i in range(1, 5)]
+        if any(not option for option in options) or not _distinct(options):
+            errors.append("Single Correct requires four distinct non-empty options.")
+        answers = _parse_answers(q["right_answer"])
+        if len(answers) != 1 or answers[0] not in {"1", "2", "3", "4"}:
+            errors.append("Single Correct requires exactly one answer position from 1-4.")
+        else:
+            q["right_answer"] = answers[0]
+
+    elif qtype == "Multi Correct":
         options = [q[f"option_{i}"] for i in range(1, 5)]
         if any(not o for o in options) or not _distinct(options):
             errors.append("Multi Correct requires four distinct non-empty options.")
@@ -423,7 +440,7 @@ Exact required breakdown:
 {_budget_text(budget)}
 
 Important:
-- Do NOT generate Single Correct questions.
+- Generate every requested question type exactly as specified, including Single Correct when requested.
 - These questions will be appended after the existing quiz.
 - Vary answer positions naturally. Do not create a predictable answer-position pattern.
 - For True/False, make the three-question set include both TRUE and FALSE answers whenever three are requested.
@@ -497,12 +514,20 @@ def _shuffle_nonpositional(question: dict[str, Any], rng: random.Random) -> None
 def randomize_generated_answers(questions: list[dict[str, Any]]) -> None:
     rng = random.SystemRandom()
     for question in questions:
-        if question.get("question_type") == "Multi Correct":
+        if question.get("question_type") in {"Single Correct", "Multi Correct"}:
             _shuffle_multi(question, rng)
         elif question.get("question_type") == "Dropdown":
             _shuffle_dropdown(question, rng)
         else:
             _shuffle_nonpositional(question, rng)
+
+    # Avoid identical Single Correct positions across all 3.
+    single = [q for q in questions if q.get("question_type") == "Single Correct"]
+    for _ in range(24):
+        patterns = [q.get("right_answer", "") for q in single]
+        if len(patterns) <= 1 or len(set(patterns)) > 1:
+            break
+        _shuffle_multi(single[-1], rng)
 
     # Avoid identical Multi Correct answer-key patterns across all 3.
     multi = [q for q in questions if q.get("question_type") == "Multi Correct"]
@@ -793,7 +818,7 @@ def generate_additional_questions(
         missing = _missing(current)
         if any(missing.values()):
             raise RuntimeError(
-                "Could not produce the required 18 structurally valid questions. Missing: "
+                f"Could not produce the required {TOTAL_GENERATED} structurally valid questions. Missing: "
                 + ", ".join(f"{qtype}={count}" for qtype, count in missing.items() if count)
             )
         return current
@@ -850,7 +875,7 @@ def generate_additional_questions(
             repaired = fill_missing(repair_base, f"Generating QA replacements for round {completed_repair_rounds}")
         except Exception as exc:
             # Repair is best-effort. Never fail a lesson solely because replacement
-            # generation could not improve an otherwise complete 18-question set.
+            # generation could not improve an otherwise complete generated-question set.
             accepted = original_before_repair
             generation_warnings.append(
                 f"Automated QA repair round {completed_repair_rounds} could not complete ({exc}); "

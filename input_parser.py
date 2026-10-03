@@ -212,9 +212,17 @@ def collect_uploaded_files(uploaded_files) -> tuple[list[FileRecord], list[str],
         upload_name = getattr(uploaded, "name", "uploaded")
         lower = upload_name.lower()
         if lower.endswith(".zip"):
+            temp_zip_path = os.path.join(temp_dir, f"_uploaded_{len(records):06d}.zip")
             try:
-                payload = uploaded.read()
-                with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                # Avoid creating a second full in-memory copy of a large upload.
+                with open(temp_zip_path, "wb") as target:
+                    while True:
+                        chunk = uploaded.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        target.write(chunk)
+
+                with zipfile.ZipFile(temp_zip_path) as zf:
                     for member in zf.namelist():
                         parts = _clean_parts(member)
                         if not parts or member.endswith("/"):
@@ -225,7 +233,7 @@ def collect_uploaded_files(uploaded_files) -> tuple[list[FileRecord], list[str],
                             continue
                         relative = "/".join(parts)
                         counter += 1
-                        out = os.path.join(temp_dir, f"{counter:04d}_{Path(name).name}")
+                        out = os.path.join(temp_dir, f"{counter:06d}_{Path(name).name}")
                         Path(out).write_bytes(zf.read(member))
                         lesson_id = _lesson_id_from_parts(relative)
                         chapter_key = _chapter_key_from_parts(relative, lesson_id)
@@ -234,6 +242,11 @@ def collect_uploaded_files(uploaded_files) -> tuple[list[FileRecord], list[str],
                 errors.append(f"{upload_name}: invalid/corrupted ZIP archive.")
             except Exception as exc:
                 errors.append(f"{upload_name}: ZIP extraction failed: {exc}")
+            finally:
+                try:
+                    os.remove(temp_zip_path)
+                except OSError:
+                    pass
         else:
             name = Path(upload_name.replace("\\", "/")).name
             ext = Path(name).suffix.lower()
@@ -242,7 +255,7 @@ def collect_uploaded_files(uploaded_files) -> tuple[list[FileRecord], list[str],
             try:
                 relative = upload_name.replace("\\", "/")
                 counter += 1
-                out = os.path.join(temp_dir, f"{counter:04d}_{name}")
+                out = os.path.join(temp_dir, f"{counter:06d}_{name}")
                 data = uploaded.getbuffer() if hasattr(uploaded, "getbuffer") else uploaded.read()
                 Path(out).write_bytes(bytes(data))
                 lesson_id = _lesson_id_from_parts(relative)
@@ -325,6 +338,11 @@ def _content_sniff(record: FileRecord) -> dict[str, float]:
 
 
 def score_file_roles(record: FileRecord) -> dict[str, float]:
+    # Large batches may contain 1,500+ source files. Role selection asks for all
+    # three roles, so cache the expensive DOCX content sniff after the first pass.
+    if record.role_scores:
+        return record.role_scores
+
     text = _normalized_name(record.name)
     scores = {role: 0.0 for role in ROLE_NAMES}
 

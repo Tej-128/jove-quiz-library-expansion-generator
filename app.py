@@ -4,6 +4,8 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import queue
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import os
 import shutil
 import tempfile
@@ -57,6 +59,7 @@ hr{border:none;border-top:1px solid var(--jove-border)}
 
 st.session_state.setdefault("result_zip", None)
 st.session_state.setdefault("result_name", "")
+st.session_state.setdefault("result_parts", [])
 st.session_state.setdefault("batch_rows", [])
 st.session_state.setdefault("batch_warnings", [])
 st.session_state.setdefault("jove_access_granted", False)
@@ -173,16 +176,25 @@ with st.sidebar:
         help="Reviews only the newly generated questions against the uploaded source. Existing Word questions are never rewritten or re-solved.",
     )
 
+    batch_workers = int(st.number_input(
+        "Parallel lesson workers",
+        min_value=1,
+        max_value=6,
+        value=4,
+        step=1,
+        help="Large-batch mode. Four workers is the default; lower this only if your API account is rate-limited.",
+    ))
+
     st.markdown("---")
     st.markdown(
         f"""
 **Locked output rules**
-- Existing Word questions are transferred as-is
+- Existing Word wording/order is preserved; explicit equations receive the required readable + LaTeX representation
 - `*` in existing options defines the correct answer(s)
 - {TOTAL_GENERATED} new questions per lesson
 - {PER_TYPE} each: {', '.join(GENERATED_TYPES)}
 - One Excel per lesson
-- Existing questions first; new questions appended underneath
+- Existing and new questions are separated by labeled/color-coded sections in Excel
 - Yellow rows = manual review recommended
 - Red rows = critical review required
 """
@@ -195,7 +207,7 @@ st.markdown(
       <div>
         <div class="jove-brand">JoVE</div>
         <div class="jove-product">Quiz Library Expansion Generator</div>
-        <div class="jove-subtitle">Convert approved lesson quizzes to Excel and append 18 source-grounded questions for review.</div>
+        <div class="jove-subtitle">Convert approved lesson quizzes to Excel and append 21 source-grounded questions across 7 question types.</div>
       </div>
       <div class="jove-badge">Internal Pilot</div>
     </div>
@@ -254,6 +266,12 @@ with c3:
 if issues:
     st.warning(f"{len(issues)} lesson bundle(s) require input review. They will not be generated until the file-role ambiguity/missing file is fixed.")
 
+if len(ready) >= 50:
+    st.info(
+        f"Large-batch mode enabled for {len(ready)} ready lessons. "
+        f"The app will process up to {batch_workers} lessons in parallel and create a checkpoint ZIP part after every 25 successful lessons."
+    )
+
 if not subject.strip():
     st.warning("Enter the Subject in the sidebar before generation.")
 
@@ -275,140 +293,288 @@ if st.button(
     heartbeat_box = st.empty()
     output_dir = tempfile.mkdtemp(prefix="jove_quiz_expansion_outputs_")
     output_files: list[tuple[str, str]] = []
-    batch_rows: list[dict] = []
+    batch_rows_by_index: dict[int, dict] = {}
     batch_warnings: list[str] = []
     batch_started = time.monotonic()
+    progress_events: queue.Queue = queue.Queue()
+    checkpoint_outputs: list[tuple[str, str]] = []
+    checkpoint_rows: list[dict] = []
+    checkpoint_part_number = 0
+    CHECKPOINT_PART_SIZE = 25
 
-    # Clear prior result only when a new run actually begins.
     st.session_state["result_zip"] = None
     st.session_state["result_name"] = ""
+    st.session_state["result_parts"] = []
     st.session_state["batch_rows"] = []
     st.session_state["batch_warnings"] = []
 
+    def _run_one_lesson(index: int, bundle):
+        lesson_started = time.monotonic()
+
+        def lesson_progress(message, pct=None):
+            progress_events.put(
+                {
+                    "index": index,
+                    "lesson_id": bundle.lesson_id,
+                    "message": message,
+                    "pct": pct,
+                    "elapsed": int(time.monotonic() - lesson_started),
+                }
+            )
+
+        try:
+            output_path, report = process_lesson(
+                bundle,
+                subject=subject,
+                api_key=api_key,
+                model=model,
+                enable_ai_accuracy_qa=enable_ai_accuracy_qa,
+                output_dir=output_dir,
+                progress_callback=lesson_progress,
+            )
+            archive_path = f"{_safe_name(bundle.chapter_key)}/{bundle.lesson_id}/{Path(output_path).name}"
+            row = {
+                "Lesson ID": report["lesson_id"],
+                "Lesson Title": report["lesson_title"],
+                "Chapter": report["chapter_name"],
+                "Existing Questions": report["existing_questions"],
+                "New Questions": report["generated_questions"],
+                "Total Questions": report["total_questions"],
+                "New Review Flags": report["generated_review_count"],
+                "New Red Flags": report["generated_fail_count"],
+                "QA Replacements": report.get("qa_replacements", 0),
+                "QA Repair Rounds": report.get("qa_repair_rounds", 0),
+                "Existing Parse Flags": report["existing_parse_flags"],
+                "Elapsed (s)": int(time.monotonic() - lesson_started),
+                "Status": "Completed",
+            }
+            return {
+                "index": index,
+                "success": True,
+                "row": row,
+                "output": (archive_path, output_path),
+                "warnings": [f"Lesson {bundle.lesson_id}: {w}" for w in report.get("warnings", [])],
+            }
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
+            row = {
+                "Lesson ID": bundle.lesson_id,
+                "Lesson Title": "",
+                "Chapter": bundle.chapter_key,
+                "Existing Questions": "",
+                "New Questions": "",
+                "Total Questions": "",
+                "New Review Flags": "",
+                "New Red Flags": "",
+                "QA Replacements": "",
+                "QA Repair Rounds": "",
+                "Existing Parse Flags": "",
+                "Elapsed (s)": int(time.monotonic() - lesson_started),
+                "Status": f"Failed: {error_text}",
+            }
+            return {
+                "index": index,
+                "success": False,
+                "row": row,
+                "output": None,
+                "warnings": [
+                    f"Lesson {bundle.lesson_id} failed: {error_text}",
+                    traceback.format_exc(limit=8),
+                ],
+            }
+
     try:
-        for idx, bundle in enumerate(ready, 1):
-            lesson_started = time.monotonic()
-            status_box.info(f"Processing lesson {bundle.lesson_id} ({idx}/{len(ready)})")
+        worker_count = max(1, min(int(batch_workers), 6, len(ready)))
+        status_box.info(
+            f"Starting {len(ready)} lessons with {worker_count} parallel worker(s)..."
+        )
 
-            def lesson_progress(message, pct=None):
-                elapsed = int(time.monotonic() - lesson_started)
-                status_box.info(
-                    f"Lesson {bundle.lesson_id} ({idx}/{len(ready)}): {message} "
-                    f"- elapsed {elapsed}s"
-                )
-                heartbeat_box.caption(
-                    f"Last activity: lesson {bundle.lesson_id} - {message} | "
-                    f"batch elapsed {int(time.monotonic() - batch_started)}s"
-                )
-                if pct is not None:
-                    within = pct / 100.0
-                    overall = int((((idx - 1) + within) / max(1, len(ready))) * 100)
-                    progress.progress(min(100, max(0, overall)))
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="jove-quiz",
+        ) as executor:
+            future_map = {
+                executor.submit(_run_one_lesson, index, bundle): (index, bundle)
+                for index, bundle in enumerate(ready, 1)
+            }
+            pending = set(future_map)
+            completed = 0
 
-            try:
-                output_path, report = process_lesson(
-                    bundle,
-                    subject=subject,
-                    api_key=api_key,
-                    model=model,
-                    enable_ai_accuracy_qa=enable_ai_accuracy_qa,
-                    output_dir=output_dir,
-                    progress_callback=lesson_progress,
+            while pending:
+                done, pending = wait(
+                    pending,
+                    timeout=0.75,
+                    return_when=FIRST_COMPLETED,
                 )
-                archive_path = f"{_safe_name(bundle.chapter_key)}/{bundle.lesson_id}/{Path(output_path).name}"
-                output_files.append((archive_path, output_path))
-                batch_rows.append({
-                    "Lesson ID": report["lesson_id"],
-                    "Lesson Title": report["lesson_title"],
-                    "Chapter": report["chapter_name"],
-                    "Existing Questions": report["existing_questions"],
-                    "New Questions": report["generated_questions"],
-                    "Total Questions": report["total_questions"],
-                    "New Review Flags": report["generated_review_count"],
-                    "New Red Flags": report["generated_fail_count"],
-                    "QA Replacements": report.get("qa_replacements", 0),
-                    "QA Repair Rounds": report.get("qa_repair_rounds", 0),
-                    "Existing Parse Flags": report["existing_parse_flags"],
-                    "Elapsed (s)": int(time.monotonic() - lesson_started),
-                    "Status": "Completed",
-                })
-                batch_warnings.extend(f"Lesson {bundle.lesson_id}: {w}" for w in report.get("warnings", []))
-                status_box.success(
-                    f"Lesson {bundle.lesson_id} completed in {int(time.monotonic() - lesson_started)}s "
-                    f"({idx}/{len(ready)})."
-                )
-            except Exception as exc:
-                error_text = f"{type(exc).__name__}: {exc}"
-                batch_rows.append({
-                    "Lesson ID": bundle.lesson_id,
-                    "Lesson Title": "",
-                    "Chapter": bundle.chapter_key,
-                    "Existing Questions": "",
-                    "New Questions": "",
-                    "Total Questions": "",
-                    "New Review Flags": "",
-                    "New Red Flags": "",
-                    "QA Replacements": "",
-                    "QA Repair Rounds": "",
-                    "Existing Parse Flags": "",
-                    "Elapsed (s)": int(time.monotonic() - lesson_started),
-                    "Status": f"Failed: {error_text}",
-                })
-                batch_warnings.append(f"Lesson {bundle.lesson_id} failed: {error_text}")
-                batch_warnings.append(traceback.format_exc(limit=8))
-                status_box.error(f"Lesson {bundle.lesson_id} failed: {error_text}. Continuing to the next lesson.")
 
-            progress.progress(min(100, int((idx / max(1, len(ready))) * 100)))
+                latest_event = None
+                while True:
+                    try:
+                        latest_event = progress_events.get_nowait()
+                    except queue.Empty:
+                        break
+                if latest_event:
+                    heartbeat_box.caption(
+                        f"Last activity: lesson {latest_event['lesson_id']} - "
+                        f"{latest_event['message']} - lesson elapsed {latest_event['elapsed']}s | "
+                        f"batch elapsed {int(time.monotonic() - batch_started)}s"
+                    )
 
-            # Checkpoint after EVERY lesson so a later API failure does not hide
-            # all earlier results/diagnostics from the current Streamlit session.
-            st.session_state["batch_rows"] = list(batch_rows)
-            st.session_state["batch_warnings"] = list(batch_warnings)
-            live_results.dataframe(pd.DataFrame(batch_rows), use_container_width=True, hide_index=True)
-            if output_files:
-                try:
-                    st.session_state["result_zip"] = _build_zip(output_files, batch_rows)
-                    st.session_state["result_name"] = f"{_safe_name(subject)}_Quiz_Library_Expansion_PARTIAL.zip"
-                except Exception as checkpoint_exc:
-                    batch_warnings.append(f"Partial ZIP checkpoint failed: {checkpoint_exc}")
+                for future in done:
+                    index, bundle = future_map[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        error_text = f"{type(exc).__name__}: {exc}"
+                        result = {
+                            "index": index,
+                            "success": False,
+                            "row": {
+                                "Lesson ID": bundle.lesson_id,
+                                "Lesson Title": "",
+                                "Chapter": bundle.chapter_key,
+                                "Existing Questions": "",
+                                "New Questions": "",
+                                "Total Questions": "",
+                                "New Review Flags": "",
+                                "New Red Flags": "",
+                                "QA Replacements": "",
+                                "QA Repair Rounds": "",
+                                "Existing Parse Flags": "",
+                                "Elapsed (s)": "",
+                                "Status": f"Failed: {error_text}",
+                            },
+                            "output": None,
+                            "warnings": [
+                                f"Lesson {bundle.lesson_id} worker failed: {error_text}",
+                                traceback.format_exc(limit=8),
+                            ],
+                        }
+
+                    completed += 1
+                    batch_rows_by_index[result["index"]] = result["row"]
+                    checkpoint_rows.append(result["row"])
+                    batch_warnings.extend(result.get("warnings", []))
+
+                    if result.get("success") and result.get("output"):
+                        output_files.append(result["output"])
+                        checkpoint_outputs.append(result["output"])
+                        status_box.success(
+                            f"Completed lesson {result['row']['Lesson ID']} "
+                            f"({completed}/{len(ready)} finished)."
+                        )
+                    else:
+                        status_box.error(
+                            f"Lesson {result['row']['Lesson ID']} failed "
+                            f"({completed}/{len(ready)} finished). Continuing the batch."
+                        )
+
+                    progress.progress(
+                        min(100, max(0, int((completed / max(1, len(ready))) * 100)))
+                    )
+
+                    ordered_rows = [
+                        batch_rows_by_index[key]
+                        for key in sorted(batch_rows_by_index)
+                    ]
+                    st.session_state["batch_rows"] = ordered_rows
+                    st.session_state["batch_warnings"] = list(batch_warnings)
+                    # Limit repeated browser rendering cost during 500-lesson runs.
+                    live_results.dataframe(
+                        pd.DataFrame(ordered_rows[-200:]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    if len(checkpoint_outputs) >= CHECKPOINT_PART_SIZE:
+                        checkpoint_part_number += 1
+                        part_name = (
+                            f"{_safe_name(subject)}_Quiz_Library_Expansion_"
+                            f"Part_{checkpoint_part_number:02d}.zip"
+                        )
+                        part_bytes = _build_zip(
+                            list(checkpoint_outputs),
+                            list(checkpoint_rows),
+                        )
+                        st.session_state["result_parts"].append(
+                            {"name": part_name, "data": part_bytes}
+                        )
+                        checkpoint_outputs = []
+                        checkpoint_rows = []
+
+        ordered_rows = [
+            batch_rows_by_index[key]
+            for key in sorted(batch_rows_by_index)
+        ]
+
+        # Flush the final partial checkpoint group, if any.
+        if checkpoint_outputs:
+            checkpoint_part_number += 1
+            part_name = (
+                f"{_safe_name(subject)}_Quiz_Library_Expansion_"
+                f"Part_{checkpoint_part_number:02d}.zip"
+            )
+            part_bytes = _build_zip(
+                list(checkpoint_outputs),
+                list(checkpoint_rows),
+            )
+            st.session_state["result_parts"].append(
+                {"name": part_name, "data": part_bytes}
+            )
 
         if output_files:
-            zip_bytes = _build_zip(output_files, batch_rows)
+            # Build the complete ZIP once. Earlier versions rebuilt an ever-growing
+            # ZIP after every lesson, which is unnecessarily expensive for 100-500 lessons.
+            zip_bytes = _build_zip(output_files, ordered_rows)
             st.session_state["result_zip"] = zip_bytes
-            st.session_state["result_name"] = f"{_safe_name(subject)}_Quiz_Library_Expansion.zip"
-            st.session_state["batch_rows"] = batch_rows
+            st.session_state["result_name"] = (
+                f"{_safe_name(subject)}_Quiz_Library_Expansion.zip"
+            )
+            st.session_state["batch_rows"] = ordered_rows
             st.session_state["batch_warnings"] = batch_warnings
             status_box.success(
-                f"Completed {len(output_files)} lesson Excel file(s) in "
-                f"{int(time.monotonic() - batch_started)}s."
+                f"Completed {len(output_files)} lesson Excel file(s) out of "
+                f"{len(ready)} in {int(time.monotonic() - batch_started)}s."
             )
         else:
-            status_box.error("No lesson Excel files were created. Review the live results and diagnostics below.")
+            status_box.error(
+                "No lesson Excel files were created. Review the live results and diagnostics below."
+            )
             st.session_state["result_zip"] = None
-            st.session_state["batch_rows"] = batch_rows
+            st.session_state["batch_rows"] = ordered_rows
             st.session_state["batch_warnings"] = batch_warnings
 
     except Exception as batch_exc:
-        # This catches unexpected orchestration errors outside the per-lesson guard.
         error_text = f"{type(batch_exc).__name__}: {batch_exc}"
         batch_warnings.append(f"Batch orchestration failed: {error_text}")
         batch_warnings.append(traceback.format_exc(limit=12))
-        st.session_state["batch_rows"] = batch_rows
+        ordered_rows = [
+            batch_rows_by_index[key]
+            for key in sorted(batch_rows_by_index)
+        ]
+        st.session_state["batch_rows"] = ordered_rows
         st.session_state["batch_warnings"] = batch_warnings
+
         if output_files:
             try:
-                st.session_state["result_zip"] = _build_zip(output_files, batch_rows)
-                st.session_state["result_name"] = f"{_safe_name(subject)}_Quiz_Library_Expansion_PARTIAL.zip"
-            except Exception:
-                pass
+                st.session_state["result_zip"] = _build_zip(
+                    output_files,
+                    ordered_rows,
+                )
+                st.session_state["result_name"] = (
+                    f"{_safe_name(subject)}_Quiz_Library_Expansion_PARTIAL.zip"
+                )
+            except Exception as checkpoint_exc:
+                batch_warnings.append(
+                    f"Partial ZIP recovery failed: {checkpoint_exc}"
+                )
+
         status_box.error(
             f"Batch stopped unexpectedly: {error_text}. "
-            "Completed lesson outputs, if any, were checkpointed for download."
+            "Completed outputs and checkpoint parts were preserved where possible."
         )
 
     finally:
-        # Source and generated work files are temporary. Once final/partial ZIP bytes
-        # are held in session state, remove temporary disk copies from the worker.
         shutil.rmtree(output_dir, ignore_errors=True)
         if temp_dir and os.path.isdir(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -422,6 +588,19 @@ if st.session_state.get("batch_warnings"):
     with st.expander(f"Warnings / diagnostics ({len(st.session_state['batch_warnings'])})"):
         for warning in st.session_state["batch_warnings"]:
             st.write(warning)
+
+if st.session_state.get("result_parts"):
+    with st.expander(f"Checkpoint ZIP parts ({len(st.session_state['result_parts'])})"):
+        st.caption("Useful for very large batches; each part contains up to 25 completed lesson workbooks.")
+        for part_index, part in enumerate(st.session_state["result_parts"], 1):
+            st.download_button(
+                f"Download checkpoint part {part_index:02d}",
+                data=part["data"],
+                file_name=part["name"],
+                mime="application/zip",
+                key=f"checkpoint_download_{part_index}",
+                use_container_width=True,
+            )
 
 if st.session_state.get("result_zip"):
     st.download_button(
