@@ -15,7 +15,7 @@ from typing import Any
 
 import openpyxl
 
-from input_parser import bundle_lessons, records_from_directory
+from input_parser import FileRecord, bundle_lessons, records_from_directory
 from local_batch_runtime import CONFIG_FILENAME, STATUS_FILENAME, STOP_FILENAME, read_json
 from pipeline import PIPELINE_VERSION, process_lesson
 from quiz_generator import GENERATED_TYPES, PER_TYPE, TOTAL_GENERATED
@@ -124,6 +124,40 @@ def is_rate_limit_error(message: str) -> bool:
     return any(marker in lower for marker in RATE_LIMIT_MARKERS)
 
 
+def load_job_records(config: dict[str, Any]) -> list[FileRecord]:
+    input_dir = Path(config["input_dir"])
+    manifest_path = Path(
+        config.get("input_manifest")
+        or input_dir / "input_manifest.json"
+    )
+
+    if manifest_path.is_file():
+        payload = read_json(manifest_path, {})
+        records: list[FileRecord] = []
+        for item in payload.get("files", []) or []:
+            stored_path = input_dir / str(item.get("stored_path", ""))
+            if not stored_path.is_file():
+                raise FileNotFoundError(
+                    f"Persisted input file is missing: {stored_path}"
+                )
+            records.append(
+                FileRecord(
+                    name=str(item.get("name", stored_path.name)),
+                    path=str(stored_path),
+                    relative_path=str(
+                        item.get("relative_path", item.get("name", stored_path.name))
+                    ),
+                    extension=str(item.get("extension", stored_path.suffix)).lower(),
+                    lesson_id=str(item.get("lesson_id", "")),
+                    chapter_key=str(item.get("chapter_key", "")),
+                )
+            )
+        return records
+
+    # Backward-compatible fallback for local jobs created before v1.7.1.
+    return records_from_directory(str(input_dir))
+
+
 def validate_output(path: str, report: dict[str, Any]) -> None:
     if int(report.get("generated_questions", -1)) != TOTAL_GENERATED:
         raise RuntimeError(
@@ -212,7 +246,7 @@ def main(job_dir: str) -> int:
     status_path = job_path / STATUS_FILENAME
     rows = load_existing_rows(progress_csv)
 
-    records = records_from_directory(str(input_dir))
+    records = load_job_records(config)
     bundles = bundle_lessons(records)
     bundle_by_id = {
         bundle.lesson_id: bundle
