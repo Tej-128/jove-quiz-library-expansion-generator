@@ -230,6 +230,18 @@ def main(job_dir: str) -> int:
             },
         )
 
+    # A manual resume of a completed-with-failures job gives failed lessons a fresh
+    # worker-level retry budget. Completed workbooks remain skipped.
+    for lesson_id in lesson_ids:
+        if rows[lesson_id].get("status") == "Failed" and lesson_id in bundle_by_id:
+            rows[lesson_id].update(
+                {
+                    "status": "Pending",
+                    "attempt": 0,
+                    "last_error": "Retry requested from a previous failed run.",
+                }
+            )
+
     completed_ids = {
         lesson_id
         for lesson_id, row in rows.items()
