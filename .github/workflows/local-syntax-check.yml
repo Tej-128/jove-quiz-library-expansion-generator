@@ -15,6 +15,7 @@ jobs:
           python-version: "3.11"
       - name: Compile production Python files
         run: |
+          python -m py_compile app.py
           python -m py_compile local_app.py
           python -m py_compile local_batch_runtime.py
           python -m py_compile local_batch_worker.py
