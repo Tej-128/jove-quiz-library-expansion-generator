@@ -22,11 +22,13 @@ For each lesson, the tool:
 8. Prevents exact/near duplicates against both the existing quiz and the newly generated questions. AI QA also receives the existing quiz as an exclusion reference so it can catch semantic overlap that simple text matching misses.
 9. Automatically replaces generated questions that fail QA or receive a substantive duplicate/source/ambiguity review flag, then re-runs QA. Up to two repair rounds are attempted before a question is left for manual review.
 10. Randomizes answer/choice positions for generated choice-based formats while never shuffling existing Word questions.
-11. Appends all 18 generated questions below the existing quiz rows.
-12. Colors only unresolved questions requiring manual review in Excel:
+11. Stores every equation/formula/reaction equation in quiz text as inline LaTeX code using `\( ... \)`. This applies to newly generated questions and to explicit equations encountered while transferring existing Word quiz text; ordinary prose is not rewritten.
+12. Keeps `Match the following` and `Categorisation` in the established JoVE format: the correct relationship/category structure remains embedded in the option fields and `Right Answer` stays blank.
+13. Appends all 18 generated questions below the existing quiz rows.
+14. Colors only unresolved questions requiring manual review in Excel:
     - Yellow: manual review recommended, including duplicate-only issues that remain after repair attempts
     - Red: substantive critical issue such as unsupported/incorrect/ambiguous/malformed content
-13. Produces one Excel workbook per lesson plus a batch summary CSV inside the final ZIP.
+15. Produces one Excel workbook per lesson plus a batch summary CSV inside the final ZIP.
 
 ## Expected input
 
@@ -126,3 +128,21 @@ The Streamlit interface uses a JoVE-oriented visual system: JoVE red accents, in
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## Resilient batch execution (v1.2.0)
+
+- OpenAI requests use an explicit configurable timeout (\`JOVE_LLM_TIMEOUT_SECONDS\`, default 150 seconds) and one SDK retry by default (\`JOVE_LLM_MAX_RETRIES\`).
+- The Streamlit batch updates a live lesson-results table after every lesson.
+- Completed lesson outputs are checkpointed into a partial ZIP during the run.
+- Per-lesson failures are shown immediately and the batch continues.
+- Unexpected batch-orchestration failures surface a visible error and preserve completed outputs when possible.
+- Progress stages are printed to Streamlit logs so the last active stage can be identified if the cloud worker restarts.
+
+## Equation / LaTeX rule (v1.3.0)
+
+- Every explicit equation, formula, inequality, or reaction equation in output quiz text is represented as inline LaTeX code: \`\( ... \)\`.
+- The generator prompt requires LaTeX, and deterministic validation/normalization prevents obvious raw equation relations from being exported outside LaTeX delimiters.
+- Duplicate and grounding checks strip LaTeX markup before comparison so required math formatting does not create false duplicate/source flags.
+- Existing quiz prose remains unchanged except for the equation representation itself.
+- \`Match the following\` and \`Categorisation\` behavior is intentionally unchanged; \`Right Answer\` remains blank for these two types.
+
