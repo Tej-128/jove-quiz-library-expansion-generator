@@ -16,10 +16,14 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import quiz_generator as quiz_generator_module
 
 from input_parser import bundle_lessons, collect_uploaded_files
 from pipeline import PIPELINE_VERSION, process_lesson
 from quiz_generator import GENERATED_TYPES, PER_TYPE, TOTAL_GENERATED
+
+EXPECTED_BUILD = "v1.5.0_live_checkpoints_21q"
+EXPECTED_TOTAL_GENERATED = 21
 
 st.set_page_config(
     page_title="JoVE Quiz Library Expansion Generator",
@@ -27,6 +31,22 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Fail closed on mixed/stale Streamlit module deployments. This prevents a newer
+# app.py from silently running against an older cached quiz_generator.py (e.g. 18
+# questions instead of the required 21).
+_current_generator_build = getattr(quiz_generator_module, "GENERATOR_BUILD_VERSION", "stale-or-unknown")
+if (
+    _current_generator_build != EXPECTED_BUILD
+    or PIPELINE_VERSION != EXPECTED_BUILD
+    or TOTAL_GENERATED != EXPECTED_TOTAL_GENERATED
+):
+    st.error(
+        "Deployment version mismatch detected. Stop the current run and reboot the Streamlit app once. "
+        f"Expected {EXPECTED_BUILD} / {EXPECTED_TOTAL_GENERATED} questions, but loaded "
+        f"generator={_current_generator_build}, pipeline={PIPELINE_VERSION}, total={TOTAL_GENERATED}."
+    )
+    st.stop()
 
 st.markdown(
     """
@@ -194,12 +214,12 @@ with st.sidebar:
 - {TOTAL_GENERATED} new questions per lesson
 - {PER_TYPE} each: {', '.join(GENERATED_TYPES)}
 - One Excel per lesson
-- Existing and new questions are separated by labeled/color-coded sections in Excel
+- One JoVE-red separator row is inserted between existing and newly generated questions in Excel
 - Yellow rows = manual review recommended
 - Red rows = critical review required
 """
     )
-    st.caption(f"JoVE Internal Tool - {PIPELINE_VERSION}")
+    st.caption(f"JoVE Internal Tool - {PIPELINE_VERSION} - {TOTAL_GENERATED} new questions/lesson")
 
 st.markdown(
     """
@@ -301,6 +321,10 @@ if st.button(
     checkpoint_rows: list[dict] = []
     checkpoint_part_number = 0
     CHECKPOINT_PART_SIZE = 25
+    checkpoint_download_area = st.container()
+    with checkpoint_download_area:
+        st.markdown("#### Completed checkpoint batches")
+        st.caption("Each 25-lesson checkpoint appears here immediately and can be downloaded without interrupting the remaining generation.")
 
     st.session_state["result_zip"] = None
     st.session_state["result_name"] = ""
@@ -499,6 +523,16 @@ if st.button(
                         st.session_state["result_parts"].append(
                             {"name": part_name, "data": part_bytes}
                         )
+                        with checkpoint_download_area:
+                            st.download_button(
+                                f"Download {part_name} - ready while generation continues",
+                                data=part_bytes,
+                                file_name=part_name,
+                                mime="application/zip",
+                                key=f"live_checkpoint_download_{checkpoint_part_number}",
+                                on_click="ignore",
+                                use_container_width=True,
+                            )
                         checkpoint_outputs = []
                         checkpoint_rows = []
 
@@ -599,6 +633,7 @@ if st.session_state.get("result_parts"):
                 file_name=part["name"],
                 mime="application/zip",
                 key=f"checkpoint_download_{part_index}",
+                on_click="ignore",
                 use_container_width=True,
             )
 
@@ -608,5 +643,6 @@ if st.session_state.get("result_zip"):
         data=st.session_state["result_zip"],
         file_name=st.session_state.get("result_name") or "Quiz_Library_Expansion.zip",
         mime="application/zip",
+        on_click="ignore",
         use_container_width=True,
     )

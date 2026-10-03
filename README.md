@@ -103,7 +103,7 @@ Option 4
 Right Answer
 ```
 
-Existing questions appear first, in original order. The 21 generated questions are appended in a clearly labeled AI-generated section below them. A second `QA Summary` sheet documents flags and source files.
+Existing questions appear first, in original order. A single JoVE-red separator row marks the transition, and the 21 generated questions begin immediately below it. Existing/new question rows otherwise keep the normal sheet background unless QA flags them yellow/red. A second `QA Summary` sheet documents flags and source files.
 
 ## Streamlit deployment
 
@@ -156,6 +156,12 @@ streamlit run app.py
 - OpenAI requests use a 180-second timeout and three SDK retries by default.
 - File-role scoring is cached so each DOCX is content-sniffed only once instead of once per role.
 - ZIP uploads are extracted from a disk-backed temporary archive instead of creating another full in-memory ZIP copy.
-- The app no longer rebuilds the full result ZIP after every lesson. It builds checkpoint ZIP parts every 25 successful lessons and creates the full ZIP once at the end.
+- The app no longer rebuilds the full result ZIP after every lesson. It builds checkpoint ZIP parts every 25 successful lessons, exposes each completed part for download immediately while the remaining lessons continue, and creates the full ZIP once at the end.
 - A failed lesson does not stop the remaining lessons.
 - For very large runs, checkpoint ZIP parts remain available in the current Streamlit session if the batch exits normally or hits a caught orchestration error.
+
+## Deployment consistency guard (v1.5.0_live_checkpoints_21q)
+
+- The UI, pipeline, and quiz-generator build IDs must match before generation can start.
+- If Streamlit has a stale cached module after a deployment, the app stops with a visible reboot message instead of silently generating the previous 18-question configuration.
+- The required generated count is 21 questions per lesson across 7 types.

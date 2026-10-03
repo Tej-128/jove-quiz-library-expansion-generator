@@ -33,7 +33,6 @@ THIN_GRAY = Border(
     bottom=Side(style="thin", color="D9E1F2"),
 )
 SECTION_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=10)
-EXISTING_SECTION_FILL = PatternFill("solid", fgColor="4472C4")
 NEW_SECTION_FILL = PatternFill("solid", fgColor="D71920")
 
 
@@ -60,11 +59,6 @@ def _row_fill(question: dict[str, Any]):
         return RED_FILL
     if level == "review":
         return YELLOW_FILL
-    origin = str(question.get("origin", "")).lower()
-    if origin == "existing":
-        return BLUE_FILL
-    if origin == "generated":
-        return GREEN_FILL
     return None
 
 
@@ -170,11 +164,8 @@ def _write_summary(
     row += 1
     ws.cell(row, 1, "Color legend").font = BOLD_FONT
     row += 1
-    ws.cell(row, 1, "Blue").fill = BLUE_FILL
-    ws.cell(row, 2, "Existing approved question transferred from the Word quiz")
-    row += 1
-    ws.cell(row, 1, "Green").fill = GREEN_FILL
-    ws.cell(row, 2, "New AI-generated question that passed automated checks")
+    ws.cell(row, 1, "No fill")
+    ws.cell(row, 2, "Normal question row; the red separator in the Quiz sheet marks where new questions begin")
     row += 1
     ws.cell(row, 1, "Yellow").fill = YELLOW_FILL
     ws.cell(row, 2, "Manual review recommended")
@@ -227,7 +218,7 @@ def build_lesson_workbook(
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Quiz"
-    ws.freeze_panes = "A3"
+    ws.freeze_panes = "A2"
     ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
@@ -239,17 +230,9 @@ def build_lesson_workbook(
     existing_prepared = [dict(q) for q in existing_questions]
     generated_prepared = [dict(q) for q in generated_questions]
 
-    # Keep the established 10-column schema, but make the two origins unmistakable
-    # for reviewers through full-width section bars and row fills.
+    # Existing questions remain visually unchanged. One JoVE-red separator row is
+    # inserted immediately before the newly generated questions.
     row = 2
-    _write_section_row(
-        ws,
-        row,
-        f"EXISTING APPROVED QUESTIONS - {len(existing_prepared)} transferred from source Word quiz",
-        EXISTING_SECTION_FILL,
-    )
-    row += 1
-
     for idx, q in enumerate(existing_prepared, 1):
         q["question_index"] = idx
         _write_question_row(ws, row, q, chapter_name)
@@ -258,7 +241,7 @@ def build_lesson_workbook(
     _write_section_row(
         ws,
         row,
-        f"NEW AI-GENERATED QUESTIONS - {len(generated_prepared)} additional questions for review",
+        f"NEW AI-GENERATED QUESTIONS BELOW - {len(generated_prepared)} questions",
         NEW_SECTION_FILL,
     )
     row += 1

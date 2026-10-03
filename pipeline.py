@@ -9,9 +9,9 @@ from typing import Any, Callable
 from excel_export import build_lesson_workbook, save_workbook
 from existing_quiz_parser import parse_existing_quiz_docx
 from input_parser import LessonBundle, load_lesson_sources
-from quiz_generator import TOTAL_GENERATED, generate_additional_questions
+from quiz_generator import GENERATOR_BUILD_VERSION, TOTAL_GENERATED, generate_additional_questions
 
-PIPELINE_VERSION = "v1.4.0_scale_singlecorrect_dual_latex"
+PIPELINE_VERSION = GENERATOR_BUILD_VERSION
 
 
 def _safe_filename(text: str) -> str:
