@@ -6,7 +6,9 @@ import re
 #   (Actual equation) \(LaTeX code\)
 # Example:
 #   (E = mc²) \(E = mc^{2}\)
-_LATEX_SPAN_RE = re.compile(r"(\\\(.+?\\\)|\\\[.+?\\\]|\$[^$]+\$)", re.DOTALL)
+_INLINE_LATEX_RE = re.compile(r"(\\\(.+?\\\))", re.DOTALL)
+_ANY_LATEX_SPAN_RE = re.compile(r"(\\\(.+?\\\)|\\\[.+?\\\]|\$\$.*?\$\$|\$[^$]+\$)", re.DOTALL)
+_LATEX_SPAN_RE = _ANY_LATEX_SPAN_RE
 
 _OPERATOR_MAP = {
     "×": r"\times",
@@ -29,7 +31,9 @@ _OPERATOR_MAP = {
     "γ": r"\gamma",
     "λ": r"\lambda",
     "μ": r"\mu",
+    "µ": r"\mu",
     "σ": r"\sigma",
+    "Ω": r"\Omega",
     "θ": r"\theta",
 }
 _REVERSE_OPERATOR_MAP = {latex: raw for raw, latex in _OPERATOR_MAP.items()}
@@ -47,7 +51,52 @@ _SUBSCRIPTS = str.maketrans({
 
 # Deterministic conversion targets obvious equations/reactions. The generation prompt
 # is stricter and requires every mathematical expression to use the dual format.
-_RELATION_RE = re.compile(r"(?<!\\)(=|≤|≥|≠|≈|→|↔|⇌)")
+_RELATION_RE = re.compile(r"(?<!\\)(<=|>=|!=|=|≤|≥|≠|≈|→|↔|⇌)")
+_UNICODE_SCRIPT_RE = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻₀₁₂₃₄₅₆₇₈₉₊₋]")
+_GREEK_RE = re.compile(r"[\u0370-\u03FF\u1F00-\u1FFFµ]")
+_UNICODE_MATH_RE = re.compile(r"[\u2200-\u22FF\u2190-\u21FF]")
+_RADICAL_RE = re.compile(r"[√∛∜]")
+_DEGREE_RE = re.compile(r"°")
+_CARET_OR_SUBSCRIPT_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Za-z0-9][A-Za-z0-9().+-]*?)\s*[\^_]\s*(?:\{[^{}]+\}|[+-]?\d+|[A-Za-z])"
+)
+_NUMERIC_FRACTION_RE = re.compile(r"(?<!\w)\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?(?!\w)")
+_ALGEBRAIC_FRACTION_RE = re.compile(r"(?<!\w)[A-Za-z]\s*/\s*[A-Za-z](?!\w)")
+_RATIO_RE = re.compile(r"(?<!\w)\d+(?:\.\d+)?\s*:\s*\d+(?:\.\d+)?(?!\s*(?:AM|PM)\b)", re.I)
+_SCI_NOTATION_RE = re.compile(
+    r"(?<!\w)(?:\d+(?:\.\d+)?|\.\d+)\s*(?:[×x*]\s*10\s*(?:\^|\*\*)?\s*[+-]?\d+|[eE][+-]?\d+)(?!\w)"
+)
+_FUNCTION_RE = re.compile(r"\b(?:sin|cos|tan|cot|sec|csc|log|ln|exp)\s*\(", re.I)
+_MATH_OPERATOR_EXPR_RE = re.compile(
+    r"(?<!\w)(?:[A-Za-z0-9.)]+)\s+(?:\+|\-|\*|/)\s+(?:[A-Za-z0-9.(]+)(?!\w)|"
+    r"(?<!\w)(?:\d+(?:\.\d+)?|[A-Za-z])\s*(?:\+|\*)\s*(?:\d+(?:\.\d+)?|[A-Za-z])(?!\w)|"
+    r"(?<!\w)(?:\d+(?:\.\d+)?|[a-z])\s*-\s*(?:\d+(?:\.\d+)?|[a-z])(?!\w)|"
+    r"(?<!\w)(?:[A-Za-z0-9.)]+)\s*(?:÷|×|·)\s*(?:[A-Za-z0-9.(]+)(?!\w)"
+)
+_CHEM_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Z][a-z]?\d*){2,}(?:\^?\d*[+-])?(?![A-Za-z0-9])"
+)
+_ION_RE = re.compile(r"(?<![A-Za-z])(?:[A-Z][a-z]?)(?:\d*)[+-](?![A-Za-z0-9])")
+_ISOTOPE_RE = re.compile(r"(?<![A-Za-z0-9])(?:\^\{?\d{1,3}\}?|[¹²³⁴⁵⁶⁷⁸⁹⁰]{1,3})[A-Z][a-z]?(?![A-Za-z])")
+_ELEMENT_ISOTOPE_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z][a-z]?\-\d{1,3}(?!\d)")
+_UNIT_FRACTION_RE = re.compile(
+    r"(?<!\w)(?:\d+(?:\.\d+)?\s*)?(?:kg|g|mg|µg|μg|mol|mmol|L|mL|m|cm|mm|s|ms|Pa|kPa|J|W|V|A|Hz|N|K)"
+    r"\s*/\s*(?:kg|g|mg|µg|μg|mol|mmol|L|mL|m|cm|mm|s|ms|Pa|kPa|J|W|V|A|Hz|N|K)(?!\w)",
+    re.I,
+)
+_LATEX_COMMAND_OUTSIDE_RE = re.compile(
+    r"\\(?:frac|sqrt|times|div|cdot|leq|geq|neq|approx|pm|rightarrow|leftrightarrow|rightleftharpoons|"
+    r"infty|pi|Delta|delta|alpha|beta|gamma|lambda|mu|sigma|theta|Omega|mathrm|text)\b"
+)
+_VARIABLE_CUE_RE = re.compile(
+    r"\b(?:variable|variables|symbol|symbols|constant|constants|quantity|quantities|coefficient|coefficients)\b"
+    r"[^.!?\n]{0,100}\b[B-HJ-Zb-hj-z]\b"
+)
+_VARIABLE_MEANING_RE = re.compile(
+    r"(?<!\w)[B-HJ-Zb-hj-z](?!\w)\s+(?:represents|denotes|indicates|corresponds\s+to)\b",
+    re.I,
+)
+_UNICODE_FRACTION_RE = re.compile(r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]")
 
 
 def _replace_unicode_scripts(expr: str) -> str:
@@ -118,9 +167,15 @@ def _matching_open_parenthesis(text: str, close_index: int) -> int:
 
 
 def _dual_ranges(text: str) -> list[tuple[int, int]]:
-    """Locate already-correct '(actual) \\(latex\\)' spans so normalization is idempotent."""
+    """
+    Locate exact production review-format spans:
+        (Readable expression) \\(LaTeX expression\\)
+
+    Only inline \\(...\\) is accepted. Dollar math and display math are not accepted
+    as the production format.
+    """
     ranges: list[tuple[int, int]] = []
-    for match in _LATEX_SPAN_RE.finditer(text):
+    for match in _INLINE_LATEX_RE.finditer(text):
         idx = match.start() - 1
         while idx >= 0 and text[idx].isspace():
             idx -= 1
@@ -129,8 +184,8 @@ def _dual_ranges(text: str) -> list[tuple[int, int]]:
         open_idx = _matching_open_parenthesis(text, idx)
         if open_idx < 0:
             continue
-        actual = text[open_idx + 1 : idx]
-        if _RELATION_RE.search(actual) or re.search(r"[+\-×÷·/^√]", actual):
+        actual = text[open_idx + 1 : idx].strip()
+        if actual:
             ranges.append((open_idx, match.end()))
     return ranges
 
@@ -142,10 +197,95 @@ def _protect_ranges(
 ) -> tuple[str, list[tuple[str, str]]]:
     protected: list[tuple[str, str]] = []
     for start, end in sorted(ranges, reverse=True):
-        token = f"@@{prefix}_{len(protected)}@@"
+        token = f"jjj{prefix.lower().replace(chr(95), chr(120))}x{len(protected)}jjj"
         protected.append((token, text[start:end]))
         text = text[:start] + token + text[end:]
     return text, protected
+
+
+def _looks_like_chemical_formula(token: str) -> bool:
+    if not token:
+        return False
+    # Avoid normal all-cap acronyms such as DNA/ATP. A digit, explicit charge,
+    # or multi-letter element symbol makes the chemical interpretation strong.
+    return bool(
+        re.search(r"\d", token)
+        or re.search(r"[+-]$", token)
+        or re.search(r"[A-Z][a-z]", token)
+    )
+
+
+def _contains_required_notation(text: str) -> bool:
+    """Detect scientific/mathematical notation that must use the dual format."""
+    if not text:
+        return False
+
+    if (
+        _RELATION_RE.search(text)
+        or _UNICODE_SCRIPT_RE.search(text)
+        or _GREEK_RE.search(text)
+        or _UNICODE_MATH_RE.search(text)
+        or _RADICAL_RE.search(text)
+        or _DEGREE_RE.search(text)
+        or _CARET_OR_SUBSCRIPT_RE.search(text)
+        or _NUMERIC_FRACTION_RE.search(text)
+        or _ALGEBRAIC_FRACTION_RE.search(text)
+        or _RATIO_RE.search(text)
+        or _SCI_NOTATION_RE.search(text)
+        or _FUNCTION_RE.search(text)
+        or _MATH_OPERATOR_EXPR_RE.search(text)
+        or _ION_RE.search(text)
+        or _ISOTOPE_RE.search(text)
+        or _ELEMENT_ISOTOPE_RE.search(text)
+        or _UNIT_FRACTION_RE.search(text)
+        or _LATEX_COMMAND_OUTSIDE_RE.search(text)
+        or _VARIABLE_CUE_RE.search(text)
+        or _VARIABLE_MEANING_RE.search(text)
+        or _UNICODE_FRACTION_RE.search(text)
+    ):
+        return True
+
+    for match in _CHEM_TOKEN_RE.finditer(text):
+        if _looks_like_chemical_formula(match.group(0)):
+            return True
+
+    return False
+
+
+def latex_format_issues(value: str) -> list[str]:
+    """
+    Strict generated-content validation.
+
+    Every scientific/mathematical expression must already be:
+        (Readable expression) \\(LaTeX expression\\)
+
+    This check runs on raw generated text so unformatted notation is rejected and
+    regenerated rather than silently repaired into the workbook.
+    """
+    text = "" if value is None else str(value)
+    if not text:
+        return []
+
+    stripped, _ = _protect_ranges(text, _dual_ranges(text), "JOVE_DUALCHECK")
+
+    # Any remaining TeX span is not in the exact required dual format.
+    if _ANY_LATEX_SPAN_RE.search(stripped):
+        return [
+            "LaTeX span is missing its immediately preceding readable '(...)' copy "
+            "or uses a non-inline delimiter."
+        ]
+
+    if _contains_required_notation(stripped):
+        return [
+            "Scientific/mathematical notation remains outside the required "
+            "'(Readable expression) \\(LaTeX expression\\)' format."
+        ]
+
+    return []
+
+
+def has_unwrapped_latex_required(value: str) -> bool:
+    return bool(latex_format_issues(value))
 
 
 def _lhs_start(text: str, relation_start: int) -> int:
@@ -284,13 +424,8 @@ def normalize_latex_math(value: str) -> str:
 
 
 def has_unwrapped_equation(value: str) -> bool:
-    """True only when an obvious relation remains outside the required dual/LaTeX format."""
-    text = "" if value is None else str(value)
-    if not text:
-        return False
-    stripped, _ = _protect_ranges(text, _dual_ranges(text), "JOVE_DUALCHECK")
-    stripped = _LATEX_SPAN_RE.sub("", stripped)
-    return bool(_RELATION_RE.search(stripped))
+    """Backward-compatible alias; now enforces ALL required scientific/LaTeX notation."""
+    return has_unwrapped_latex_required(value)
 
 
 def latex_to_plain_text(value: str) -> str:
