@@ -8,9 +8,9 @@ import os
 import time
 from typing import Any, Callable
 
-from latex_math import has_unwrapped_equation, latex_to_plain_text, normalize_latex_math
+from latex_math import has_unwrapped_latex_required, latex_to_plain_text, normalize_latex_math
 
-GENERATOR_BUILD_VERSION = "v1.7.1_windows_safe_inputs"
+GENERATOR_BUILD_VERSION = "v1.8.2_strict_latex_all_scientific"
 
 GENERATED_TYPES = [
     "Single Correct",
@@ -59,7 +59,51 @@ ABSOLUTE SOURCE RULES
 3. Avoid duplicating or closely paraphrasing any existing quiz question supplied in the exclusion list.
 4. No explanations or rationales are required.
 5. Return ONLY a valid JSON array. No markdown, code fences, or prose.
-6. EQUATIONS / MATHEMATICS: Every equation, formula, inequality, reaction equation, or mathematical expression that appears in question_content, any option field, or a text-valued right_answer MUST use this exact review format: (Actual equation) followed immediately by its inline LaTeX code. Example: (E = mc²) \\(E = mc^{2}\\). Preserve the readable equation inside parentheses, then provide the LaTeX representation. Do not leave equation symbols such as =, ≤, ≥, ≠, ≈, →, ↔, or ⇌ outside this dual format. Ordinary non-mathematical numbers and percentages in prose do not need LaTeX.
+6. STRICT LATEX / SCIENTIFIC NOTATION - HARD REQUIREMENT:
+Every GENERATED question, regardless of question type, MUST use the dual readable + LaTeX format anywhere mathematical or scientific notation requires LaTeX.
+
+This applies everywhere the notation can appear:
+- question_content
+- option_1 through option_4
+- every individual pipe-separated Dropdown choice
+- both sides of every Match the following pair
+- category names/items in Categorisation
+- Fill in the Blanks right_answer
+- any other text-valued answer field
+
+Notation requiring the dual format includes, without limitation:
+- equations and formulas
+- chemical formulas and reaction equations
+- Greek/scientific symbols such as α, β, ρ, μ, Δ, Ω
+- subscripts and superscripts
+- exponents and powers
+- fractions and ratios
+- square roots/radicals
+- inequalities and mathematical operators
+- reaction/equilibrium arrows
+- scientific notation
+- mathematical variables and expressions
+- units requiring mathematical notation such as °C, m², mol L⁻¹, m/s²
+- ionic charges such as Ca²⁺ and SO₄²⁻
+- isotope notation
+- any other scientific/mathematical expression that requires LaTeX for accurate representation
+
+EXACT REQUIRED FORMAT:
+(Readable expression) \(LaTeX expression\)
+
+Examples:
+(C₆H₁₂O₆) \(C_{6}H_{12}O_{6}\)
+(200 °C) \(200\,^{\circ}\mathrm{C}\)
+(ρ) \(\rho\)
+(Ca²⁺) \(Ca^{2+}\)
+(P = ρgh) \(P = \rho gh\)
+(1/2) \(\frac{1}{2}\)
+(1.2 × 10³) \(1.2 \times 10^{3}\)
+(mol L⁻¹) \(\mathrm{mol}\,\mathrm{L}^{-1}\)
+
+Do NOT output raw LaTeX alone. Do NOT use $...$, $...$, or display-math delimiters. Do NOT leave required notation bare and rely on post-processing to fix it. The readable expression must appear first in parentheses, immediately followed by inline LaTeX in \(...\).
+
+Ordinary prose numbers, years, IDs, and simple percentages that do not require mathematical typesetting are exempt. Any required notation left outside the exact dual format will fail deterministic validation and the candidate will be rejected/regenerated.
 
 OUTPUT SCHEMA
 Each object must contain exactly:
@@ -113,7 +157,9 @@ QA_SYSTEM_PROMPT = """You are a strict JoVE quiz quality reviewer.
 Use ONLY the supplied lesson source. Do not use outside knowledge.
 The EXISTING QUIZ QUESTIONS are approved content used only as a duplication/exclusion reference. Do not judge or rewrite them.
 Review the GENERATED QUESTIONS against the lesson source, against the existing quiz questions, and against one another.
-Treat the required equation representation as: (Actual equation) followed by its inline LaTeX code. Example: (E = mc²) \\(E = mc^{2}\\). The readable and LaTeX copies represent the same equation and must not be treated as duplication.
+Treat the required scientific/mathematical notation representation as the exact dual format:
+(Readable expression) \(LaTeX expression\).
+This requirement applies to equations, chemical formulas/reactions, Greek/scientific symbols, subscripts/superscripts, powers, fractions/ratios, radicals, inequalities/operators, arrows, scientific notation, variables, math-formatted units, ions/charges, isotopes, and any other notation requiring LaTeX, wherever it appears in the generated question fields. The readable and LaTeX copies represent the same expression and must not be treated as duplication.
 Return only a JSON array. For every generated question return exactly:
 question_index, status, issue
 
@@ -289,15 +335,9 @@ def validate_generated_question(
     q["review_level"] = "none"
     q["review_reason"] = ""
 
-    # Required output convention: equations/formulas use the dual review form
-    # (Actual equation) followed by its inline LaTeX code. Ordinary prose is untouched.
-    for math_field in ["question_content", "option_1", "option_2", "option_3", "option_4"]:
-        q[math_field] = normalize_latex_math(q[math_field])
-
     qtype = q["question_type"]
-    if qtype == "Fill in the Blanks":
-        q["right_answer"] = normalize_latex_math(q["right_answer"])
     content = q["question_content"]
+
     if qtype not in GENERATED_TYPES:
         errors.append(f"Unknown generated question type '{qtype}'.")
         return q, warnings, errors
@@ -306,12 +346,36 @@ def validate_generated_question(
     if "|" in content:
         errors.append("Question content contains illegal pipe character.")
 
+    # HARD GATE: inspect the RAW model output before any best-effort normalization.
+    # If scientific/mathematical notation is bare, malformed, LaTeX-only, or uses
+    # a delimiter other than the exact '(Readable expression) \(LaTeX expression\)'
+    # form, this candidate is rejected and the normal generation/repair loop must
+    # produce a replacement. Nothing is silently allowed into Excel.
     math_check_fields = ["question_content", "option_1", "option_2", "option_3", "option_4"]
     if qtype == "Fill in the Blanks":
         math_check_fields.append("right_answer")
-    unwrapped = [field for field in math_check_fields if has_unwrapped_equation(q.get(field, ""))]
-    if unwrapped:
-        errors.append("Equation/formula must use (Actual equation) followed by inline LaTeX in: " + ", ".join(unwrapped) + ".")
+
+    latex_issue_fields = [
+        field
+        for field in math_check_fields
+        if has_unwrapped_latex_required(q.get(field, ""))
+    ]
+    if latex_issue_fields:
+        errors.append(
+            "STRICT LATEX FORMAT FAILURE - scientific/mathematical notation must use "
+            "(Readable expression) followed immediately by inline LaTeX in: "
+            + ", ".join(latex_issue_fields)
+            + "."
+        )
+    else:
+        # Valid exact dual spans are already idempotent. Keep the legacy normalizer
+        # only for compatibility/whitespace handling; it is NOT used to rescue failed
+        # generated notation.
+        for math_field in ["question_content", "option_1", "option_2", "option_3", "option_4"]:
+            q[math_field] = normalize_latex_math(q[math_field])
+        if qtype == "Fill in the Blanks":
+            q["right_answer"] = normalize_latex_math(q["right_answer"])
+        content = q["question_content"]
 
     for key in ["option_1", "option_2", "option_3", "option_4"]:
         if q[key].lower() == "none":
