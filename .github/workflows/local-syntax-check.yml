@@ -26,3 +26,6 @@ jobs:
           python -m py_compile excel_export.py
           python -m py_compile existing_quiz_parser.py
           python -m py_compile latex_math.py
+          python -m py_compile latex_regression_check.py
+      - name: Run strict LaTeX regression checks
+        run: python latex_regression_check.py
