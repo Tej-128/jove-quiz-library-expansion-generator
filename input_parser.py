@@ -44,7 +44,7 @@ class LessonBundle:
 
     @property
     def ready(self) -> bool:
-        return bool(self.pagetext and self.transcript and self.quiz and not self.errors)
+        return bool(self.pagetext and self.transcript and not self.errors)
 
 
 # -----------------------------------------------------------------------------
@@ -404,7 +404,7 @@ def score_file_roles(record: FileRecord) -> dict[str, float]:
     return scores
 
 
-def _choose_role(records: list[FileRecord], role: str) -> tuple[FileRecord | None, list[str], list[str]]:
+def _choose_role(records: list[FileRecord], role: str, *, required: bool = True) -> tuple[FileRecord | None, list[str], list[str]]:
     warnings: list[str] = []
     errors: list[str] = []
     candidates: list[tuple[float, FileRecord]] = []
@@ -417,7 +417,8 @@ def _choose_role(records: list[FileRecord], role: str) -> tuple[FileRecord | Non
 
     candidates.sort(key=lambda pair: pair[0], reverse=True)
     if not candidates:
-        errors.append(f"No {role} file detected.")
+        if required:
+            errors.append(f"No {role} file detected.")
         return None, warnings, errors
 
     best_score, best = candidates[0]
@@ -450,7 +451,7 @@ def bundle_lessons(records: list[FileRecord]) -> list[LessonBundle]:
         chapter_key = next((r.chapter_key for r in lesson_records if r.chapter_key), "Uploaded_Chapter")
         bundle = LessonBundle(lesson_id=lesson_id, chapter_key=chapter_key)
         for role in ROLE_NAMES:
-            selected, warnings, errors = _choose_role(lesson_records, role)
+            selected, warnings, errors = _choose_role(lesson_records, role, required=(role != "quiz"))
             setattr(bundle, role if role != "pagetext" else "pagetext", selected)
             bundle.warnings.extend(warnings)
             bundle.errors.extend(errors)
