@@ -382,6 +382,13 @@ def score_file_roles(record: FileRecord) -> dict[str, float]:
         scores["transcript"] += 8.0
     if "transcript" in text or "transcription" in text:
         scores["transcript"] += 10.0
+    elif any(
+        len(token) >= 7
+        and SequenceMatcher(None, token, "transcript").ratio() >= 0.88
+        for token in text.split()
+    ):
+        # Near-match common misspellings such as "Transcipt" without guessing roles from short tokens.
+        scores["transcript"] += 8.0
     if _contains_token(text, "script") or "video script" in text:
         scores["transcript"] += 7.0
 
