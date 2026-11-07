@@ -721,6 +721,13 @@ if st.button(
             st.error(
                 f"Batch generation failed before any lesson completed: {exc}"
             )
+            # The outer error is generic when zero Excel files were created.
+            # Preserve and display the original per-lesson error(s) to diagnose
+            # validation, model/API, timeout, or source-processing failures.
+            if errors:
+                with st.expander("Failed lesson details", expanded=True):
+                    for message in errors:
+                        st.error(message)
 
         with st.expander("Technical error details"):
             st.code(traceback.format_exc())
