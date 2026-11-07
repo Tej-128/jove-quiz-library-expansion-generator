@@ -287,6 +287,8 @@ if not api_key:
     st.stop()
 
 st.info(
+    "PageText and Transcript/CC are required. Existing Quiz is optional; "
+    "when absent, all 21 questions are generated from scratch. "
     "Each completed lesson Excel is automatically sent to your browser as soon as that lesson finishes. "
     "A manual download button remains visible for the latest completed file, and checkpoint/final ZIP downloads are also retained."
 )
@@ -316,7 +318,7 @@ for bundle in bundles:
             "Chapter": bundle.chapter_key,
             "PageText": bundle.pagetext.name if bundle.pagetext else "NOT DETECTED",
             "Transcript / CC": bundle.transcript.name if bundle.transcript else "NOT DETECTED",
-            "Existing Quiz": bundle.quiz.name if bundle.quiz else "NOT DETECTED",
+            "Existing Quiz": bundle.quiz.name if bundle.quiz else "Not provided (optional)",
             "Status": "Ready" if bundle.ready else "Needs review",
             "Warnings / Errors": " | ".join(bundle.errors + bundle.warnings),
         }
