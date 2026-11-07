@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from excel_export import build_lesson_workbook, save_workbook
-from existing_quiz_parser import parse_existing_quiz_docx
+from existing_quiz_parser import ExistingQuizParseResult, parse_existing_quiz_docx
 from input_parser import LessonBundle, load_lesson_sources
 from quiz_generator import GENERATOR_BUILD_VERSION, TOTAL_GENERATED, generate_additional_questions
 
@@ -41,12 +41,15 @@ def process_lesson(
         if progress_callback:
             progress_callback(message, pct)
 
-    notify("Reading existing approved quiz...", 5)
-    quiz_result = parse_existing_quiz_docx(bundle.quiz.path, bundle.lesson_id)
-    if quiz_result.error:
-        raise RuntimeError(f"Existing quiz could not be read: {quiz_result.error}")
-    if not quiz_result.questions:
-        raise RuntimeError("No existing quiz questions were parsed; generation stopped to avoid losing approved content.")
+    notify("Reading existing approved quiz..." if bundle.quiz else "No existing quiz; generating from source only...", 5)
+    if bundle.quiz:
+        quiz_result = parse_existing_quiz_docx(bundle.quiz.path, bundle.lesson_id)
+        if quiz_result.error:
+            raise RuntimeError(f"Existing quiz could not be read: {quiz_result.error}")
+        if not quiz_result.questions:
+            raise RuntimeError("No existing quiz questions were parsed; generation stopped to avoid losing approved content.")
+    else:
+        quiz_result = ExistingQuizParseResult()
 
     notify("Loading PageText and Transcript/CC source...", 15)
     pt_text, transcript_text, source_warnings = load_lesson_sources(bundle)
@@ -54,7 +57,7 @@ def process_lesson(
         raise RuntimeError("Neither PageText nor Transcript/CC contains readable source text.")
 
     chapter_name = quiz_result.chapter_name or bundle.chapter_key or "Uploaded Chapter"
-    lesson_title = quiz_result.video_title or Path(bundle.quiz.name).stem
+    lesson_title = quiz_result.video_title or (Path(bundle.quiz.name).stem if bundle.quiz else f"Lesson {bundle.lesson_id}")
 
     notify(f"Generating {TOTAL_GENERATED} new questions for lesson {bundle.lesson_id}...", 35)
     generated, generation_report = generate_additional_questions(
@@ -77,7 +80,7 @@ def process_lesson(
     warnings.extend(generation_report.get("warnings", []))
 
     source_files = {
-        "Existing Quiz": bundle.quiz.name,
+        "Existing Quiz": bundle.quiz.name if bundle.quiz else "Not provided",
         "PageText": bundle.pagetext.name,
         "Transcript / CC": bundle.transcript.name,
     }
