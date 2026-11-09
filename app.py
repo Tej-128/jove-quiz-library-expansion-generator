@@ -22,7 +22,7 @@ from input_parser import bundle_lessons, collect_uploaded_files
 from pipeline import PIPELINE_VERSION, process_lesson
 from quiz_generator import GENERATED_TYPES, PER_TYPE, TOTAL_GENERATED
 
-APP_BUILD = "v1.8.0_streamlit_autodownload"
+APP_BUILD = "v1.8.1_final_zip_only"
 EXPECTED_TOTAL_GENERATED = 21
 
 st.set_page_config(
@@ -274,7 +274,7 @@ st.markdown(
 <div class="jove-header">
   <div class="jove-brand">JoVE</div>
   <div class="jove-title">Quiz Library Expansion Generator</div>
-  <div class="jove-sub">Hosted Streamlit batch mode using the same save → auto-download → clear-memory pattern as the original JoVE Quiz Generator.</div>
+  <div class="jove-sub">Hosted Streamlit batch mode: all lesson Excel files are packaged into one ZIP after generation completes.</div>
 </div>
 """,
     unsafe_allow_html=True,
@@ -289,8 +289,9 @@ if not api_key:
 st.info(
     "PageText and Transcript/CC are required. Existing Quiz is optional; "
     "when absent, all 21 questions are generated from scratch. "
-    "Each completed lesson Excel is automatically sent to your browser as soon as that lesson finishes. "
-    "A manual download button remains visible for the latest completed file, and checkpoint/final ZIP downloads are also retained."
+    "No individual Excel files are downloaded during generation. "
+    "At the end, the completed Excel files are packaged into one ZIP that downloads automatically; "
+    "a manual Download All button is also available."
 )
 
 uploaded_files = st.file_uploader(
@@ -372,7 +373,7 @@ def _render_final_result(result: dict[str, Any]) -> None:
                 st.error(message)
 
     _download_button(
-        label="Download all completed lesson Excel files ZIP",
+        label="Download all completed lessons (ZIP)",
         data=result["zip_bytes"],
         file_name="JoVE_Quiz_Library_Expansion.zip",
         mime="application/zip",
@@ -387,7 +388,7 @@ st.markdown("### Generate batch")
 st.write(
     f"Ready lessons: **{len(ready)}** | "
     f"Parallel workers: **{parallel_workers}** | "
-    "Each completed Excel will auto-download immediately."
+    "Completed lesson Excel files will download together in one ZIP at the end."
 )
 
 if st.button(
@@ -399,8 +400,6 @@ if st.button(
     progress_bar = st.progress(0)
     status_area = st.empty()
     live_table = st.empty()
-    latest_download_area = st.empty()
-    checkpoint_download_area = st.empty()
     auto_download_area = st.empty()
 
     output_dir = tempfile.mkdtemp(prefix="jove_expansion_outputs_")
@@ -412,8 +411,6 @@ if st.button(
     failed_count = 0
     current_workers = max(2, min(parallel_workers, 12))
     remaining = list(ready)
-    checkpoint_zip_bytes: bytes | None = None
-    checkpoint_number = 0
 
     try:
         while remaining:
@@ -468,9 +465,6 @@ if st.button(
                             )
                             output_files.append((archive_path, output_path))
 
-                            with open(output_path, "rb") as handle:
-                                excel_bytes = handle.read()
-
                             report = result["report"]
                             summaries.append(
                                 {
@@ -520,78 +514,6 @@ if st.button(
                                     "Status": "Completed",
                                 }
                             )
-
-                            with latest_download_area.container():
-                                st.success(
-                                    f"Completed {completed_count}/{len(ready)}: "
-                                    f"Lesson {bundle.lesson_id}"
-                                )
-                                _download_button(
-                                    label=(
-                                        "Download latest completed lesson: "
-                                        f"{output_name}"
-                                    ),
-                                    data=excel_bytes,
-                                    file_name=output_name,
-                                    mime=(
-                                        "application/vnd.openxmlformats-"
-                                        "officedocument.spreadsheetml.sheet"
-                                    ),
-                                    use_container_width=True,
-                                    key=(
-                                        f"latest_{completed_count}_"
-                                        f"{_safe_filename(bundle.lesson_id)}"
-                                    ),
-                                )
-
-                            auto_download_area.empty()
-                            with auto_download_area.container():
-                                _auto_download_bytes(
-                                    excel_bytes,
-                                    output_name,
-                                    (
-                                        "application/vnd.openxmlformats-"
-                                        "officedocument.spreadsheetml.sheet"
-                                    ),
-                                    (
-                                        f"lesson-{completed_count}-"
-                                        f"{_safe_filename(bundle.lesson_id)}"
-                                    ),
-                                )
-
-                            # Checkpoint ZIP every 25 completed lessons so a browser
-                            # that blocks one of the individual downloads still has
-                            # a compact recovery package.
-                            if completed_count % 25 == 0:
-                                checkpoint_number += 1
-                                checkpoint_zip_bytes = _build_zip_bytes(
-                                    output_files,
-                                    summaries,
-                                    errors,
-                                )
-                                with checkpoint_download_area.container():
-                                    _download_button(
-                                        label=(
-                                            f"Download checkpoint ZIP "
-                                            f"({completed_count} completed lessons)"
-                                        ),
-                                        data=checkpoint_zip_bytes,
-                                        file_name=(
-                                            "JoVE_Quiz_Library_Expansion_"
-                                            f"Checkpoint_{checkpoint_number:02d}.zip"
-                                        ),
-                                        mime="application/zip",
-                                        use_container_width=True,
-                                        key=(
-                                            f"checkpoint_{checkpoint_number}_"
-                                            f"{completed_count}"
-                                        ),
-                                    )
-
-                            # Release the per-file bytes after the browser component
-                            # and manual button have been rendered.
-                            del excel_bytes
-                            gc.collect()
 
                         else:
                             failed_count += 1
